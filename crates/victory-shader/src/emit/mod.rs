@@ -86,12 +86,16 @@ mod container;
 mod diff_tests;
 #[cfg(all(test, windows))]
 mod intersect_tests;
+#[cfg(all(test, windows))]
+mod flow_tests;
 #[cfg(all(windows, any(test, feature = "host")))]
 pub mod host;
 mod lower;
 mod own_bits;
 mod rect;
 mod sampler;
+#[cfg(all(test, windows))]
+mod semantics_tests;
 mod shader;
 mod threading;
 #[cfg(windows)]
