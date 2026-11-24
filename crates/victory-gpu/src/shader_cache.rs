@@ -1,7 +1,9 @@
 //! Translated shaders kept on disk (decision 0003): under the configured
-//! cache folder, keyed by the container's content and by the VIctory build
-//! that translated it (the BLAKE3 of our executable), so a rebuilt
-//! translator never serves an old translation. Entries go through
+//! cache folder, keyed by the container's content and by the translator
+//! that made it (a hash of `victory-shader`'s sources and of this file,
+//! plus the settings a translation depends on), so a changed translator
+//! never serves an old translation, and rebuilding anything else keeps
+//! the cache. `victory precompile` fills it ahead of a run. Entries go through
 //! `victory-pipeline`'s content-addressed cache, which writes them
 //! atomically; an entry that does not read back is translated again.
 //!
@@ -37,21 +39,37 @@ pub(crate) fn counts() -> (u64, u64) {
     (HITS.load(Ordering::Relaxed), MISSES.load(Ordering::Relaxed))
 }
 
-/// What identifies this build: the BLAKE3 of our executable file and of
-/// the translation settings it runs with (the loop limit, which a
-/// diagnostics build can change at run time).
+/// What identifies a translation besides the container: the translator
+/// (a hash of `victory-shader`'s sources, and of this file, which encodes
+/// the entries) and the settings it runs with (the loop limit, the host's
+/// wave width and the switches below). Not the whole executable: a rebuild
+/// that leaves the translator alone keeps the cache, and with it the names
+/// of host pipelines in the pipeline library.
 fn build() -> &'static [u8; 32] {
     static BUILD: OnceLock<[u8; 32]> = OnceLock::new();
     BUILD.get_or_init(|| {
-        let exe = std::env::current_exe().and_then(std::fs::read);
         let limit = victory_shader::emit::loop_limit();
         if limit != victory_shader::emit::DEFAULT_LOOP_LIMIT {
             tracing::warn!(
                 limit,
-                "VICTORY_SHADER_LOOP_LIMIT: translated loops stop sooner"
+                "translated loops stop sooner (VICTORY_SHADER_LOOP_LIMIT or VICTORY_PROFILE=low)"
             );
         }
-        match exe {
+        let wave = victory_shader::emit::host_wave_for_key();
+        tracing::info!(
+            translator = victory_shader::emit::TRANSLATOR_ID,
+            limit,
+            wave,
+            "shader cache key"
+        );
+        let identity: std::io::Result<Vec<u8>> = Ok({
+            let mut bytes = b"victory-shader ".to_vec();
+            bytes.extend_from_slice(victory_shader::emit::TRANSLATOR_ID.as_bytes());
+            bytes.extend_from_slice(blake3::hash(include_bytes!("shader_cache.rs")).as_bytes());
+            bytes.extend_from_slice(&wave.to_le_bytes());
+            bytes
+        });
+        match identity {
             Ok(mut bytes) => {
                 bytes.extend_from_slice(&limit.to_le_bytes());
                 // Which group barriers wait is part of the translation too.
@@ -87,6 +105,30 @@ fn build() -> &'static [u8; 32] {
             }
         }
     })
+}
+
+/// Translates `container` into the cache ahead of a run (`victory
+/// precompile`). `Ok(true)`: it was translated now, `Ok(false)`: it was
+/// cached already. Call [`prepare_offline_translation`] first so the
+/// translation matches what a run on this machine would make.
+pub fn precompile(container: &[u8]) -> Result<bool, String> {
+    let Some(cache) = CACHE.get() else {
+        return Err("no shader cache folder".into());
+    };
+    let ran = AtomicBool::new(false);
+    let translate = |c: &[u8]| {
+        ran.store(true, Ordering::Relaxed);
+        victory_shader::emit::translate(c).map_err(|e| e.to_string())
+    };
+    cached(cache, build(), container, translate)?;
+    Ok(ran.load(Ordering::Relaxed))
+}
+
+/// Sets what a translation depends on from this machine's GPU, as a run's
+/// host device would: the widest wave, and the view heap cap. Returns the
+/// adapter's description.
+pub fn prepare_offline_translation() -> Result<String, String> {
+    crate::host::probe_for_translation().map_err(|e| e.to_string())
 }
 
 /// The translation of a console shader container, from the cache when

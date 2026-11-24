@@ -603,6 +603,9 @@ fn create() -> windows::core::Result<Host> {
         let adapter = CreateDXGIFactory2::<IDXGIFactory4>(DXGI_CREATE_FACTORY_FLAGS(0))
             .and_then(|factory| factory.EnumAdapterByLuid::<IDXGIAdapter3>(device.GetAdapterLuid()))
             .ok();
+        if let Some(adapter) = &adapter {
+            log_adapter(adapter);
+        }
         tracing::info!("host D3D12 device ready");
         Ok(Host {
             device,
@@ -620,6 +623,107 @@ fn create() -> windows::core::Result<Host> {
             presenter: Mutex::new(None),
             adapter,
         })
+    }
+}
+
+/// The adapter's name, vendor, driver-visible memory: which GPU a run used
+/// (a laptop has two; the log did not say).
+fn adapter_line(adapter: &IDXGIAdapter3) -> String {
+    // SAFETY: plain query into a local.
+    match unsafe { adapter.GetDesc1() } {
+        Ok(d) => {
+            let len = d.Description.iter().position(|&c| c == 0).unwrap_or(d.Description.len());
+            format!(
+                "{} (vendor {:#06x}, device {:#06x}, {} MB dedicated video memory, {} MB shared)",
+                String::from_utf16_lossy(&d.Description[..len]),
+                d.VendorId,
+                d.DeviceId,
+                d.DedicatedVideoMemory >> 20,
+                d.SharedSystemMemory >> 20
+            )
+        }
+        Err(e) => format!("unknown adapter ({e})"),
+    }
+}
+
+fn log_adapter(adapter: &IDXGIAdapter3) {
+    tracing::info!(adapter = %adapter_line(adapter), "host adapter");
+}
+
+/// Peak commit of this process seen by [`log_memory`], in MB.
+static PEAK_COMMIT_MB: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// The memory line beside every frame line: what this process has
+/// committed (private bytes, which video memory counts towards too), what
+/// of it is in RAM, what the system can still commit, and the card's own
+/// and shared memory against their budgets. Commit is the hard limit on a
+/// 16 GB machine (Windows error 1455 when it runs out); a smoke run reads
+/// the peak from here (`scripts/smoke.ps1`).
+fn log_memory() {
+    use windows_sys::Win32::System::ProcessStatus::{GetProcessMemoryInfo, PROCESS_MEMORY_COUNTERS_EX};
+    use windows_sys::Win32::System::SystemInformation::{GlobalMemoryStatusEx, MEMORYSTATUSEX};
+    use windows_sys::Win32::System::Threading::GetCurrentProcess;
+    let mut process = PROCESS_MEMORY_COUNTERS_EX {
+        cb: size_of::<PROCESS_MEMORY_COUNTERS_EX>() as u32,
+        ..Default::default()
+    };
+    let mut system = MEMORYSTATUSEX {
+        dwLength: size_of::<MEMORYSTATUSEX>() as u32,
+        ..Default::default()
+    };
+    // SAFETY: queries that fill our structures, sized above.
+    let (got_process, got_system) = unsafe {
+        (
+            GetProcessMemoryInfo(GetCurrentProcess(), (&raw mut process).cast(), process.cb) != 0,
+            GlobalMemoryStatusEx(&mut system) != 0,
+        )
+    };
+    if !got_process || !got_system {
+        return;
+    }
+    let mb = |b: u64| b >> 20;
+    let committed = mb(process.PrivateUsage as u64);
+    let peak = PEAK_COMMIT_MB.fetch_max(committed, Ordering::Relaxed).max(committed);
+    let card = host().and_then(|h| h.video_memory()).unwrap_or_default();
+    tracing::info!(
+        "memory: {committed} MB committed (peak {peak} MB), {} MB in RAM; system: {} MB of {} MB \
+         commit free, {} MB of {} MB RAM free; card: {} of {} MB own, {} of {} MB shared",
+        mb(process.WorkingSetSize as u64),
+        mb(system.ullAvailPageFile),
+        mb(system.ullTotalPageFile),
+        mb(system.ullAvailPhys),
+        mb(system.ullTotalPhys),
+        mb(card[1]),
+        mb(card[0]),
+        mb(card[3]),
+        mb(card[2]),
+    );
+}
+
+/// What `victory precompile` needs before translating: the settings a run's
+/// host device would give the translator on this machine (the widest wave;
+/// the view heap cap), from a device made the same way (the default
+/// adapter, feature level 12_0). Returns the adapter's description.
+pub(crate) fn probe_for_translation() -> windows::core::Result<String> {
+    // SAFETY: device creation and queries into locals; everything made here
+    // is released on return.
+    unsafe {
+        let mut device: Option<ID3D12Device> = None;
+        D3D12CreateDevice(None, D3D_FEATURE_LEVEL_12_0, &mut device)?;
+        let device = device.ok_or_else(windows::core::Error::empty)?;
+        let mut o1 = D3D12_FEATURE_DATA_D3D12_OPTIONS1::default();
+        if device
+            .CheckFeatureSupport(D3D12_FEATURE_D3D12_OPTIONS1, (&raw mut o1).cast(), size_of_val(&o1) as u32)
+            .is_ok()
+        {
+            victory_shader::emit::set_host_max_wave(o1.WaveLaneCountMax);
+        }
+        crate::descriptor::host::probe_view_heap_cap(&device);
+        let line = CreateDXGIFactory2::<IDXGIFactory4>(DXGI_CREATE_FACTORY_FLAGS(0))
+            .and_then(|factory| factory.EnumAdapterByLuid::<IDXGIAdapter3>(device.GetAdapterLuid()))
+            .map(|adapter| adapter_line(&adapter))
+            .unwrap_or_else(|e| format!("unknown adapter ({e})"));
+        Ok(format!("{line}; wave lanes {}-{}", o1.WaveLaneCountMin, o1.WaveLaneCountMax))
     }
 }
 
@@ -5817,6 +5921,7 @@ impl Meter {
                 placed = crate::descriptor::host::PLACED_TEXTURE_SLOTS.load(Ordering::Relaxed),
                 objects = crate::descriptor::host::OBJECT_TEXTURE_SLOTS.load(Ordering::Relaxed)
             );
+            log_memory();
             #[cfg(feature = "diagnostics")]
             {
                 crate::copystat::log(std::mem::take(&mut self.copy_stats_frames) as f64);

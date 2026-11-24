@@ -118,27 +118,54 @@ pub use shader::{
     set_view_heap_limit,
 };
 
-/// The loop limit without an override: 2^20.
+/// The loop limit without an override. Its value (2^20) is a marker, not
+/// the count that runs: a program translated with it gets the per-stage
+/// caps in `lower.rs` (pixel 128, vertex and mesh 256, compute 4,096).
 pub const DEFAULT_LOOP_LIMIT: u32 = lower::LOOP_LIMIT;
 
+/// The loop limit of `VICTORY_PROFILE=low`: every stage, every loop.
+pub const LOW_PROFILE_LOOP_LIMIT: u32 = 64;
+
+/// Which translator this is: a hash of this crate's sources, made by
+/// `build.rs`. A cache of translations keys on it (with the run-time
+/// settings that change a translation) instead of on the whole executable,
+/// so rebuilding other crates keeps the cache.
+pub const TRANSLATOR_ID: &str = env!("VICTORY_SHADER_SOURCE_HASH");
+
+/// The widest wave of the host GPU as the translator sees it (0 before the
+/// host device set it): part of a translation, so a cache keys on it.
+pub fn host_wave_for_key() -> u32 {
+    lower::host_max_wave()
+}
+
 /// The iteration count after which a translated loop is left, per lane and
-/// per entry into the loop: [`DEFAULT_LOOP_LIMIT`].
+/// per entry into the loop: [`DEFAULT_LOOP_LIMIT`] (the per-stage caps).
 ///
-/// With the `diagnostics` feature, `VICTORY_SHADER_LOOP_LIMIT` (decimal or
-/// `0x` hex, at least 1) sets it instead. A loop that hits the limit in
-/// every lane of a full-screen pass still runs for seconds (2^20 times a
-/// 4K screen is about 10^13 iterations); a much lower limit shows whether
-/// such loops are what makes a frame slow. The value is part of the
-/// translation, so the shader cache must key on it (`victory-gpu`'s does).
+/// `VICTORY_SHADER_LOOP_LIMIT` (decimal or `0x` hex, at least 1) sets one
+/// cap for every stage instead. Without it, `VICTORY_PROFILE=low` sets
+/// [`LOW_PROFILE_LOOP_LIMIT`]: loops the console runs longer end early, so
+/// some effects come out wrong, in exchange for frames that cannot spend
+/// seconds in a loop. The value is part of the translation, so the shader
+/// cache keys on it (`victory-gpu`'s does).
 pub fn loop_limit() -> u32 {
     static LIMIT: std::sync::OnceLock<u32> = std::sync::OnceLock::new();
     *LIMIT.get_or_init(|| {
-        if cfg!(feature = "diagnostics") {
-            parse_loop_limit(std::env::var("VICTORY_SHADER_LOOP_LIMIT").ok().as_deref())
+        let named = std::env::var("VICTORY_SHADER_LOOP_LIMIT").ok();
+        if named.is_some() {
+            return parse_loop_limit(named.as_deref());
+        }
+        if low_profile() {
+            LOW_PROFILE_LOOP_LIMIT
         } else {
             lower::LOOP_LIMIT
         }
     })
+}
+
+/// `VICTORY_PROFILE=low`: trade correctness of effects for frames (see
+/// [`loop_limit`]).
+pub fn low_profile() -> bool {
+    std::env::var("VICTORY_PROFILE").is_ok_and(|v| v.trim().eq_ignore_ascii_case("low"))
 }
 
 /// Which of a translated program's group barriers wait for the whole
