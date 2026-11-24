@@ -9817,7 +9817,14 @@ impl<'a> Lower<'a> {
         };
         let name = inst.name();
         if name == "buffer_gl0_inv" || name == "buffer_gl1_inv" {
-            // The host has no console buffer cache to invalidate.
+            // Console cache coherence: gl0 writes back and invalidates the
+            // per-CU shader L0, gl1 invalidates GL1, so one wavefront's
+            // writes become visible to others. D3D12 already guarantees UAV
+            // coherence across wavefronts and dispatches, DXIL has no
+            // equivalent instruction, and this project's host-visible
+            // writeback comes from command-stream GpuWrite ranges rather
+            // than shader cache hints. Ordering is kept by the surrounding
+            // s_waitcnt/s_barrier, which the translator does lower.
             return Ok(());
         }
         if *lds || *tfe {
