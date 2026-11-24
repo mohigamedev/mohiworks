@@ -218,6 +218,8 @@ const PS_CASES: &[(&str, &str)] = &[
             return float4(ddx_fine(v), ddy_fine(v), v, 1);
         }"#,
     ),
+    // A discarded pixel stays a helper on the console (its code re-enables
+    // whole quads), so the survivors' derivatives still read it.
     (
         "discard then derivatives of the survivors",
         r#"[RootSignature(RS)] float4 ps(V i) : SV_Target {
@@ -225,6 +227,43 @@ const PS_CASES: &[(&str, &str)] = &[
             float v = p.x * 3.0 + p.y * 5.0;
             if (((p.x * 7 + p.y * 3) & 5) == 5) discard;
             return float4(ddx_coarse(v), ddy_coarse(v), v, 1);
+        }"#,
+    ),
+    (
+        "two discards, then derivatives",
+        r#"[RootSignature(RS)] float4 ps(V i) : SV_Target {
+            uint2 p = uint2(i.pos.xy);
+            float v = p.x * 3.0 + p.y * 5.0;
+            if ((p.x & 3) == 1 && (p.y & 1)) discard;
+            float w = v * v;
+            if (((p.x + p.y) & 7) == 6) discard;
+            return float4(ddx_fine(v), ddy_fine(w), ddx_coarse(w), 1);
+        }"#,
+    ),
+    (
+        "discard in a loop, then derivatives",
+        r#"[RootSignature(RS)] float4 ps(V i) : SV_Target {
+            uint2 p = uint2(i.pos.xy);
+            float v = 0;
+            [loop] for (uint n = 0; n < (p.y & 3) + 1; n++) {
+                v += p.x * (n + 1.0);
+                if (((p.x ^ n) & 7) == 5) discard;
+            }
+            return float4(ddx_fine(v), ddy_fine(v), v, 1);
+        }"#,
+    ),
+    (
+        "discard with depth and a second target",
+        r#"struct O { float4 c : SV_Target0; float4 d : SV_Target1; float z : SV_Depth; };
+        [RootSignature(RS)] O ps(V i) {
+            uint2 p = uint2(i.pos.xy);
+            float v = p.x * 2.0 + p.y;
+            if (((p.x * 5 + p.y) & 3) == 2) discard;
+            O o;
+            o.c = float4(ddx_coarse(v), ddy_fine(v), v, 1);
+            o.d = float4(v, 1, 2, 3);
+            o.z = 0.25;
+            return o;
         }"#,
     ),
 ];
@@ -253,23 +292,9 @@ fn console_user_data(s: &HostShader) -> Vec<u32> {
     data
 }
 
-/// Cases a known defect of the lowering fails, run by their own ignored test.
-const DEFECTS: &[&str] = &["discard then derivatives of the survivors"];
-
 #[test]
 fn control_flow_runs_as_pc_compiles_it() {
-    let failures = run(&|name| !DEFECTS.contains(&name));
-    assert!(failures.is_empty(), "{failures:#?}");
-}
-
-/// After a discard the console's code re-enables whole quads (`s_wqm_b64
-/// exec, exec`) so derivatives read the discarded neighbours as helpers;
-/// the lowered shader's quad reads get 0 from them on the RX 6700 XT (WARP
-/// keeps them): `ddx_coarse` 0 instead of 3 on 192 of 256 pixels.
-#[test]
-#[ignore = "defect: quad reads after a discard read 0 from discarded neighbours on the hardware adapter"]
-fn defect_derivatives_after_discard() {
-    let failures = run(&|name| DEFECTS.contains(&name));
+    let failures = run(&|_| true);
     assert!(failures.is_empty(), "{failures:#?}");
 }
 

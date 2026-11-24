@@ -292,16 +292,31 @@ const CS_CASES: &[(&str, &str)] = &[
         }"#,
     ),
     // Bytes and halves: SDWA operand and result selection, byte permutes,
-    // f16 conversions.
+    // f16 conversions. The console narrows to nearest even, a NaN keeping
+    // its payload's top; the PC's `f32tof16` rounds toward zero on the RX
+    // 6700 XT and WARP (and WARP's NaN is 0xffff), so the PC build rounds
+    // to nearest even itself.
     (
         "sub-dword operations",
-        r#"CS {
+        r#"
+        #ifdef CONSOLE
+        uint to16(float x) { return f32tof16(x); }
+        #else
+        uint to16(float x) {
+            uint t = f32tof16(x), u = asuint(x);
+            if (isnan(x)) return (u >> 16 & 0x8000) | 0x7e00 | (u >> 13 & 0x3ff);
+            float m = abs(x), lo = abs(f16tof32(t)), hi = abs(f16tof32(t + 1));
+            if (m >= 65520.0) return (t & 0x8000) | 0x7c00;
+            return m - lo > hi - m || (m - lo == hi - m && (t & 1)) ? t + 1 : t;
+        }
+        #endif
+        CS {
             uint n = d.y * 16 + d.x;
             uint x = raw.Load(4 * (n & 31)), y = raw.Load(4 * ((n * 7) & 31));
             float a = float(x >> 16) + float((y >> 8) & 255) * k.x;
             float b = f16tof32(x >> 16) + f16tof32(y);
             uint p = (x & 0xff) | ((y & 0xff) << 8) | (x & 0xff0000) | ((y >> 8) << 24);
-            uint q = f32tof16(a) | (f32tof16(b) << 16);
+            uint q = to16(a) | (to16(b) << 16);
             int s = int(x << 24) >> 24;
             uint u = (x & 0xffff) + (y >> 16) + ((x >> 24) ^ (y & 0xffff)) + asuint(k.w) * 1000 + 77;
             outb.Store4(16 * n, uint4(asuint(a), asuint(b) ^ p, q, asuint(float(s)) + u));

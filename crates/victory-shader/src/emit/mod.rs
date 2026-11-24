@@ -656,17 +656,29 @@ fn emit_program(
         }
         _ => 0,
     };
-    let l = lower::lower(&lower::Parts {
+    let parts = |st, res| lower::Parts {
         native,
         p,
         st,
         io,
         res,
-        inputs,
-        outputs,
-        prims,
+        inputs: inputs.clone(),
+        outputs: outputs.clone(),
+        prims: prims.clone(),
         mesh_stride,
-    })?;
+    };
+    let killed;
+    let (l, res) = match lower::lower(&parts(st, res)) {
+        // Discarded lanes kept on as helpers can read what no surviving
+        // lane does (a register only killed lanes skipped writing); such a
+        // program kills them as the console does (`structure::killing`).
+        Err(_) if !st.discards.is_empty() => {
+            let st = structure::killing(p)?;
+            killed = resource::track(p, &native.layout, native.stage, Some(&st))?;
+            (lower::lower(&parts(&st, &killed))?, &killed)
+        }
+        l => (l?, res),
+    };
     let wave_size = l.wave_size;
     let shader = HostShader {
         stage: native.stage,

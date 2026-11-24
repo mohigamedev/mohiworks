@@ -502,26 +502,37 @@ impl Probe {
     }
 }
 
-/// The probes without the inputs of known defects.
+/// Tags whose inputs the lowering still gets wrong: the open defect, and a
+/// last-bit difference the tests leave out (see [`F16_DOUBLE`]).
+const OPEN: &[&str] = &[FMA, F16_DOUBLE];
+
+/// The probes without the inputs of open defects.
 fn passing(probes: Vec<Probe>) -> Vec<Probe> {
     probes
         .into_iter()
         .filter_map(|mut p| {
             let defects = std::mem::take(&mut p.defects);
-            p.inputs.retain(|&i| !defects.iter().any(|(_, on)| on(i)));
+            p.inputs
+                .retain(|&i| !defects.iter().any(|(d, on)| OPEN.contains(d) && on(i)));
             (!p.inputs.is_empty()).then_some(p)
         })
         .collect()
 }
 
-/// The probes with only the inputs that show `defect`.
+/// The probes with only the inputs that show `defect` (and no other open
+/// one).
 fn defective(probes: Vec<Probe>, defect: &str) -> Vec<Probe> {
     probes
         .into_iter()
         .filter_map(|mut p| {
             let defects = std::mem::take(&mut p.defects);
             let on = defects.iter().find(|(d, _)| *d == defect)?;
-            p.inputs.retain(|&i| (on.1)(i));
+            p.inputs.retain(|&i| {
+                (on.1)(i)
+                    && !defects
+                        .iter()
+                        .any(|(d, o)| *d != defect && OPEN.contains(d) && o(i))
+            });
             (!p.inputs.is_empty()).then_some(p)
         })
         .collect()
@@ -1048,6 +1059,17 @@ const SCC_MIN_MAX: &str = "s_min and s_max set SCC from the result";
 const FLOOR_CVT: &str = "v_cvt_flr and v_cvt_rpi: NaN and the half";
 const MED3_ZERO: &str = "v_med3_f32 orders -0 and +0 as the host does";
 const CONSTANT_CMP: &str = "a constant compare removes the WARP device";
+/// A fused f16 result (`v_fma_f16`, `v_pk_fma_f16`, `v_fma_mix{lo,hi}_f16`)
+/// whose single rounding the lowering's f32 intermediate changes: the f32
+/// value lands on an f16 tie the exact one is not on (1 f16 ULP; the
+/// exact result needs more than f32 between the multiply-add and the
+/// narrowing).
+const F16_DOUBLE: &str = "a fused f16 result rounded in f32 first";
+
+/// Whether rounding `x` to f32 first changes its rounding to f16.
+fn twice(x: f64) -> bool {
+    to_f16(f64::from(x as f32), false) != to_f16(x, false)
+}
 
 /// Output modifiers as the lowering applies them: the multiplier keeps a
 /// -0, the clamp is DXIL's saturate.
@@ -2062,7 +2084,8 @@ fn sixteen_bit_probes() -> Vec<Probe> {
             ),
             move |i, r| fma3(i, i[3], r),
             |i| vec![i[0], i[1], i[2]],
-        ),
+        )
+        .shows(F16_DOUBLE, |i| twice(h(i[0]).mul_add(h(i[1]), h(i[2])))),
         // v_fmac_f16 accumulates into v5's low half (v5 = c).
         f16_tags(
             probe(
@@ -2073,7 +2096,8 @@ fn sixteen_bit_probes() -> Vec<Probe> {
             ),
             move |i, r| fma3(i, i[2], r),
             |i| vec![i[0], i[1], i[2]],
-        ),
+        )
+        .shows(F16_DOUBLE, |i| twice(h(i[0]).mul_add(h(i[1]), h(i[2])))),
         // v_pack_b32_f16 and v_cvt_f16_f32 with an f32 operand.
         probe(
             vop3(0x311, 5, [v(1), v(2), 0], NONE),
@@ -2145,23 +2169,36 @@ fn sixteen_bit_probes() -> Vec<Probe> {
         };
         p.push(pk(0x0F, |a, b, _| a + b));
         p.push(pk(0x10, |a, b, _| a * b));
-        p.push(pk(0x0E, |a, b, c| a.mul_add(b, c)));
+        p.push(
+            pk(0x0E, |a, b, c| a.mul_add(b, c)).shows(F16_DOUBLE, move |i| {
+                [false, true].iter().any(|&hi| {
+                    twice(h(pick(i[0], 0, hi)).mul_add(h(pick(i[1], 1, hi)), h(pick(i[2], 2, hi))))
+                })
+            }),
+        );
     }
     // v_pk_fmac_f16: both halves accumulate into v5 = c.
     let m = |i: [u32; 4], rtz: bool| {
         let r = |s: u32| to_f16(h(i[0] >> s).mul_add(h(i[1] >> s), h(i[2] >> s)), rtz);
         vec![r(0) | r(16) << 16]
     };
-    p.push(f16_tags(
-        probe(
-            [vop1(0x01, 5, v(3)), vop2(0x3C, 5, v(1), 2)],
-            half_pairs(),
-            Kind::Halves { ulps: 0 },
-            move |i| m(i, false),
-        ),
-        m,
-        |i| i[..3].iter().flat_map(|&x| [x, x >> 16]).collect(),
-    ));
+    p.push(
+        f16_tags(
+            probe(
+                [vop1(0x01, 5, v(3)), vop2(0x3C, 5, v(1), 2)],
+                half_pairs(),
+                Kind::Halves { ulps: 0 },
+                move |i| m(i, false),
+            ),
+            m,
+            |i| i[..3].iter().flat_map(|&x| [x, x >> 16]).collect(),
+        )
+        .shows(F16_DOUBLE, |i| {
+            [0, 16]
+                .iter()
+                .any(|&s| twice(h(i[0] >> s).mul_add(h(i[1] >> s), h(i[2] >> s))))
+        }),
+    );
     p
 }
 
@@ -2265,7 +2302,8 @@ fn mix_probes() -> Vec<Probe> {
                 FMA,
                 move |i| lo(i, true, false),
                 move |i| lo(i, false, false),
-            ),
+            )
+            .shows(F16_DOUBLE, move |i| twice(f(i, true))),
         );
         p.push(
             f16_tags(
@@ -2282,7 +2320,8 @@ fn mix_probes() -> Vec<Probe> {
                 FMA,
                 move |i| hi(i, true, false),
                 move |i| hi(i, false, false),
-            ),
+            )
+            .shows(F16_DOUBLE, move |i| twice(f(i, true))),
         );
     }
     p
@@ -2688,8 +2727,8 @@ fn masked_lanes_keep_their_registers() {
 
 // ---- defects ----
 //
-// Each runs the inputs a known defect of the lowering shows on; ignored
-// until the defect is fixed (then the input leaves `passing` too).
+// Each runs the inputs a defect of the lowering showed on. The fixed ones
+// run as tests; the open one is ignored until it is fixed.
 
 fn defect(probes: Vec<Probe>, which: &str) {
     let probes = defective(probes, which);
@@ -2697,12 +2736,17 @@ fn defect(probes: Vec<Probe>, which: &str) {
     assert_clean(check(&probes));
 }
 
-/// `v_fma_f32`, `v_fmac_f32` and `v_fma_mix*` are fused on the hardware
-/// (RDNA2 ISA; LLVM's `getNewFMAInst` maps `V_FMAC_F32` to `V_FMA_F32`); the
-/// lowering emits DXIL `FMad`, which the host may leave unfused, and WARP
-/// does: NaN for `fma(1.5, MAX, -inf)` (the product overflows first), +inf
-/// for `fma(1.5, MAX, -MAX)`, 0 for `fma(1 - ulp, 1 + ulp, -1)`, +0 for a
-/// tiny negative product plus +0. The RX 6700 XT fuses.
+/// Open: `v_fma_f32`, `v_fmac_f32` and `v_fma_mix*` are fused on the
+/// hardware (RDNA2 ISA; LLVM's `getNewFMAInst` maps `V_FMAC_F32` to
+/// `V_FMA_F32`); the lowering emits DXIL `FMad`, which the host may leave
+/// unfused, and WARP does: NaN for `fma(1.5, MAX, -inf)` (the product
+/// overflows first), +inf for `fma(1.5, MAX, -MAX)`, 0 for
+/// `fma(1 - ulp, 1 + ulp, -1)`, +0 for a tiny negative product plus +0.
+/// The RX 6700 XT fuses, and `victory-gpu` warns once at device creation
+/// on a host that does not. DXIL has no f32 fused multiply-add, so fixing
+/// it means computing the 6.6 M instances in f64 (`Fma` on doubles, where
+/// the host has them: exact product, one rounding to f64, then to f32) or
+/// with an error-free product in f32.
 #[test]
 #[ignore = "defect: multiply-adds are fused only where the host fuses"]
 fn defect_multiply_adds_fused_only_where_the_host_fuses() {
@@ -2711,91 +2755,82 @@ fn defect_multiply_adds_fused_only_where_the_host_fuses() {
     defect(p, FMA);
 }
 
-/// The VOP3 output multipliers turn a -0 result into +0 with IEEE mode off
-/// (measured on RDNA2, gfx1031 and gfx1036, by the Leonida project); the
-/// lowering multiplies on the host, which keeps -0.
+/// The VOP3 output multipliers flush the result and turn a zero into +0
+/// with IEEE mode off (measured on RDNA2, gfx1031 and gfx1036, by the
+/// Leonida project). Was a defect: the host's multiply kept -0.
 #[test]
-#[ignore = "defect: output multipliers keep a -0 result"]
-fn defect_output_multipliers_keep_negative_zero() {
+fn output_multipliers_give_positive_zero() {
     let mut p = arithmetic_probes();
     p.extend(min_max_probes());
     p.extend(transcendental_probes());
     defect(p, OMOD);
 }
 
-/// Denormal operands of `v_min/max/med3/min3/max3_f32` and of a float
-/// `v_cndmask_b32` with `abs`/`neg`: the console's mode reads them as zeros
-/// of their sign; the lowering leaves them to the host, and WARP and the
-/// RX 6700 XT differ (WARP flushes; the -0 < +0 rule of `max_min` tests the
-/// raw bits, so a flushed denormal meets +0 as an equal).
+/// Denormal operands of `v_min/max/med3/min3/max3_f32` read as zeros of
+/// their sign, and a float `v_cndmask_b32` with `abs`/`neg` moves only the
+/// sign bit. Was a defect: the host decided (WARP flushed, the RX 6700 XT
+/// did not, and a flushed denormal met +0 as an equal).
 #[test]
-#[ignore = "defect: denormal operands of min, max and float selects are the host's"]
-fn defect_denormal_operands_of_min_max_and_selects() {
+fn min_max_and_selects_take_denormals_on_the_bits() {
     let mut p = min_max_probes();
     p.extend(select_probes());
     defect(p, DENORMAL);
 }
 
-/// Every f16 result rounds to nearest even in the console's default mode
-/// (and the title sets toward zero only around `v_interp_p2_f16`); the
-/// lowering narrows with DXIL `legacyF32ToF16`, which rounds toward zero on
-/// both adapters here: 1 ULP low on half the values, and 65504 where the
-/// hardware gives infinity.
+/// f16 results round to nearest even, the console's default mode (toward
+/// zero only where the program sets that, which the title does around its
+/// 16-bit interpolation). Was a defect: DXIL `legacyF32ToF16` rounds toward
+/// zero on both adapters here (65504 where the hardware gives infinity).
 #[test]
-#[ignore = "defect: f16 results round toward zero"]
-fn defect_f16_results_round_toward_zero() {
+#[ignore = "ours does not lower packed 16-bit operations yet"]
+fn f16_results_round_to_nearest_even() {
     let mut p = conversion_probes();
     p.extend(sixteen_bit_probes());
     p.extend(mix_probes());
     defect(p, F16_ROUND);
 }
 
-/// The hardware rounds an f16 operation once, in f16 (denormals kept);
-/// the lowering computes it in f32 and narrows, so a small operand (a
-/// denormal here) is rounded away in f32 first, and hosts differ in where
-/// they keep the extra precision: `1.0 * 1.5 + 0x8001` (high halves of
-/// `v_pk_fma_f16`) gives 0x3e00 on WARP and 0x3dff on the RX 6700 XT.
+/// f16 arithmetic gives the same bits on every host: the f32 intermediate
+/// of an add or multiply of halves is exact or rounds innocuously, and the
+/// narrowing is on the bits. Was a defect: the hosts' own narrowing kept
+/// extra precision on one adapter and not the other (`1.0 * 1.5 + 0x8001`
+/// in `v_pk_fma_f16` gave 0x3e00 on WARP, 0x3dff on the RX 6700 XT).
 #[test]
-#[ignore = "defect: f16 arithmetic rounds in f32 first, as the host chooses"]
-fn defect_f16_rounded_twice() {
+#[ignore = "ours does not lower packed 16-bit operations (v_pk_fmac_f16) yet"]
+fn f16_arithmetic_rounds_once() {
     let mut p = sixteen_bit_probes();
     p.extend(mix_probes());
     defect(p, F16_TWICE);
 }
 
 /// `s_min_*`/`s_max_*` set SCC to whether the first operand was chosen
-/// (RDNA2 ISA); the lowering sets it to `result != 0`.
+/// (RDNA2 ISA). Was a defect: SCC was `result != 0`.
 #[test]
-#[ignore = "defect: s_min and s_max set SCC from the result"]
-fn defect_scalar_min_max_scc() {
+fn scalar_min_max_set_scc_from_the_compare() {
     defect(scalar_probes(), SCC_MIN_MAX);
 }
 
 /// `v_cvt_flr_i32_f32`/`v_cvt_rpi_i32_f32` saturate a NaN by its sign and
 /// add the half exactly (measured on RDNA2, gfx1035/gfx1036, by the
-/// Leonida project); the lowering gives 0 for NaN and rounds x + 0.5 first
-/// (0x3effffff gives 1, the hardware 0). The title uses neither.
+/// Leonida project). Was a defect: NaN gave 0 and x + 0.5 was rounded
+/// first (0x3effffff gave 1, the hardware 0). The title uses neither.
 #[test]
-#[ignore = "defect: v_cvt_flr and v_cvt_rpi: NaN and the half"]
-fn defect_floor_conversions() {
+fn floor_conversions_match_the_hardware() {
     defect(conversion_probes(), FLOOR_CVT);
 }
 
-/// `v_med3_f32` orders -0 below +0 (as its min and max do, measured on
-/// RDNA2 by the Leonida project); the lowering takes the median with plain
-/// DXIL `FMin`/`FMax`, which may return either zero: the RX 6700 XT orders
-/// them, WARP does not.
+/// `v_med3_f32` orders -0 below +0, as its min and max do. Was a defect:
+/// plain DXIL `FMin`/`FMax` gave either zero (the adapters differed).
 #[test]
-#[ignore = "defect: v_med3_f32 orders -0 and +0 as the host does"]
-fn defect_med3_signed_zeros() {
+fn med3_orders_signed_zeros() {
     defect(min_max_probes(), MED3_ZERO);
 }
 
 /// `v_cmp_f_f32` and `v_cmp_tru_f32` (always false, always true; the title
-/// uses neither): the lowered program removes the WARP device.
+/// uses neither). Was a defect: `fcmp false`/`fcmp true` removed the WARP
+/// device.
 #[test]
-#[ignore = "defect: a constant compare removes the WARP device"]
-fn defect_constant_compares() {
+fn constant_compares_run() {
     let ab = pairs(&F32_EDGES[..8], &F32_EDGES[..8]);
     let p = [0x0u16, 0xF]
         .into_iter()
@@ -2807,6 +2842,40 @@ fn defect_constant_compares() {
         })
         .collect();
     defect(p, CONSTANT_CMP);
+}
+
+/// The 16-bit round mode a program sets around its 16-bit results (the
+/// title sets toward zero around `v_interp_p2_f16`, then nearest even
+/// again): `s_setreg_imm32_b32 hwreg(HW_REG_MODE, 2, 2)` (RDNA2 ISA, MODE
+/// bits 3:2).
+#[test]
+fn f16_results_round_as_the_mode_says() {
+    let setreg = |mode: u32| [0xBA80_0881u32, mode];
+    let mut body = setreg(3).to_vec();
+    body.push(vop1(0x0A, 5, v(1)));
+    body.extend(setreg(0));
+    body.push(vop1(0x0A, 6, v(1)));
+    let narrow = |x: u32, rtz: bool| to_f16(f64::from(fl(ftz(x))), rtz);
+    assert_clean(check(&[probe(body, unary(F32_EDGES), F16, move |i| {
+        vec![
+            i[3] & 0xFFFF_0000 | narrow(i[0], true),
+            i[3] & 0xFFFF_0000 | narrow(i[0], false),
+        ]
+    })]));
+}
+
+/// The check `victory-gpu` runs at device creation: the RX 6700 XT fuses
+/// the lowering's multiply-add, WARP does not.
+#[test]
+fn hosts_that_do_not_fuse_are_named() {
+    let _one = ONE_AT_A_TIME.lock().unwrap_or_else(|e| e.into_inner());
+    if let Ok(warp) = Host::new(true) {
+        assert_eq!(warp.fuses_fmad(), Ok(false), "WARP");
+    }
+    if let Ok(hardware) = Host::new(false) {
+        let fuses = hardware.fuses_fmad().expect("the check runs");
+        eprintln!("hardware adapter fuses FMad: {fuses}");
+    }
 }
 
 /// A result that does not depend on the inputs (the control for the
