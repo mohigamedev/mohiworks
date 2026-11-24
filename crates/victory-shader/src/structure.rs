@@ -391,6 +391,20 @@ impl Bools {
         found
     }
 
+    /// The value `atom` has in every lane meeting `facts` (as [`Bools::meet`]
+    /// takes them), if they decide it.
+    pub fn decides(&self, facts: &[(Bool, bool)], atom: Atom) -> Option<bool> {
+        let x = *self
+            .unique
+            .get(&(*self.ids.get(&atom)?, Bool::FALSE, Bool::TRUE))?;
+        let can = |value| self.meet(&[facts, &[(x, value)]].concat());
+        match (can(false), can(true)) {
+            (false, true) => Some(true),
+            (true, false) => Some(false),
+            _ => None,
+        }
+    }
+
     fn implies(&mut self, a: Bool, b: Bool) -> bool {
         let nb = self.not(b);
         self.and(a, nb) == Bool::FALSE

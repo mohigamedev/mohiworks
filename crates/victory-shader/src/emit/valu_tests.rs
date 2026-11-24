@@ -11,7 +11,7 @@ use super::{HostShader, lower, validator};
 use crate::native::{
     ComputeIo, HwStage, NativeProgram, ResourceType, RootParam, RootType, StageIo, UsedResource,
 };
-use crate::{io, ir, resource, structure};
+use crate::{io, range, resource};
 
 const S_ENDPGM: u32 = 0xBF81_0000;
 
@@ -97,9 +97,21 @@ fn build_valu_cs(body: &[u32]) -> HostShader {
     build_cs(body, 1, 0)
 }
 
+fn try_build_valu_cs(body: &[u32]) -> Result<HostShader, crate::ShaderError> {
+    try_build_cs(body, 1, 0)
+}
+
 /// [`build_valu_cs`] with `threads` threads in x (thread index in `v0`
 /// on entry, before `body`) and `lds_bytes` of LDS (a multiple of 512).
 fn build_cs(body: &[u32], threads: u32, lds_bytes: u32) -> HostShader {
+    try_build_cs(body, threads, lds_bytes).expect("build")
+}
+
+fn try_build_cs(
+    body: &[u32],
+    threads: u32,
+    lds_bytes: u32,
+) -> Result<HostShader, crate::ShaderError> {
     let mut words = Vec::new();
     // s[4:5] = descriptor table address (heap index 0 -> byte offset 0).
     words.push(s_mov_b32(5, 0x80)); // inline constant 0
@@ -117,7 +129,7 @@ fn build_cs(body: &[u32], threads: u32, lds_bytes: u32) -> HostShader {
     let native = NativeProgram {
         stage: HwStage::Cs,
         wave64: false,
-        vgprs: 8,
+        vgprs: 16,
         layout: vec![
             RootParam {
                 root: RootType::Constants,
@@ -153,11 +165,10 @@ fn build_cs(body: &[u32], threads: u32, lds_bytes: u32) -> HostShader {
         code,
     };
 
-    let p = ir::build(&native.code, native.wave64, native.vgprs).expect("ir::build");
-    let st = structure::structure(&p).expect("structure");
-    let res =
-        resource::track(&p, &native.layout, native.stage, Some(&st)).expect("resource::track");
-    let io = io::raise(&p, &native).expect("io::raise");
+    let (p, st) = range::build(&native)?;
+    let st = st?;
+    let res = resource::track(&p, &native.layout, native.stage, Some(&st))?;
+    let io = io::raise(&p, &native)?;
     let lowered = lower::lower(&lower::Parts {
         native: &native,
         p: &p,
@@ -168,8 +179,7 @@ fn build_cs(body: &[u32], threads: u32, lds_bytes: u32) -> HostShader {
         outputs: Vec::new(),
         prims: Vec::new(),
         mesh_stride: 0,
-    })
-    .expect("lower");
+    })?;
 
     let shader = HostShader {
         stage: HwStage::Cs,
@@ -190,7 +200,7 @@ fn build_cs(body: &[u32], threads: u32, lds_bytes: u32) -> HostShader {
         assert_eq!(copy[4..20], ours[..], "container hash mismatch");
     }
 
-    shader
+    Ok(shader)
 }
 
 /// One GPU test at a time. With these tests on the hardware adapter and WARP
@@ -1553,4 +1563,57 @@ fn v_cmp_class_f16_matches_rdna2() {
             inp[0], inp[1],
         );
     });
+}
+
+/// A register array indexed through M0 whose upper registers hold
+/// descriptor words, which have no host value: the indices are clamped
+/// (`v_med3_u32`, `v_and_b32`), so the moves reach only v8-v11, and the
+/// program runs. Unclamped, the read could reach the descriptor words and
+/// the program is refused.
+#[test]
+fn relative_moves_reach_only_what_their_clamped_index_can() {
+    let body = |second_index: u32| {
+        let mut w = Vec::new();
+        for k in 0..4u8 {
+            w.push(vop1(0x001, 8 + k, 138 + u16::from(k))); // v_mov_b32 v8+k, 10+k
+            w.push(vop1(0x001, 12 + k, sgpr(8 + k))); // v_mov_b32 v12+k, s8+k
+        }
+        w.extend(vop3(0x159, 5, vgpr(1), 128, 131)); // v_med3_u32 v5, v1, 0, 3
+        w.push(vop1(0x002, 12, vgpr(5))); // v_readfirstlane_b32 s12, v5
+        w.push(s_mov_b32(124, 12)); // s_mov_b32 m0, s12
+        w.push(vop1(0x042, 8, vgpr(3))); // v_movreld_b32 v8, v3: v[8 + m0] = v3
+        w.push(second_index); // v6 = the second index
+        w.push(vop1(0x002, 12, vgpr(6))); // v_readfirstlane_b32 s12, v6
+        w.push(s_mov_b32(124, 12));
+        w.push(vop1(0x043, 0, vgpr(8))); // v_movrels_b32 v0, v8: v0 = v[8 + m0]
+        w
+    };
+    // v_and_b32 v6, 3, v2
+    let shader = build_valu_cs(&body(0x1B << 25 | 6 << 17 | 2 << 9 | 131));
+    let cases = [
+        [0, 0, 77, 0],
+        [5, 3, 77, 0],
+        [1, 2, 77, 0],
+        [u32::MAX, 7, 77, 0],
+        [2, 1, 77, 0],
+        [3, 0, 77, 0],
+    ];
+    run_cases(&shader, &cases, |backend, _, [a, b, c, _], got| {
+        let (i, j) = (a.min(3), b & 3);
+        let want = if i == j { c } else { 10 + j };
+        assert_eq!(got, want, "{backend}: a {a:#x} b {b:#x}");
+    });
+    // v_mov_b32 v6, v2
+    let refused = try_build_valu_cs(&body(vop1(0x001, 6, vgpr(2))));
+    assert!(
+        matches!(
+            refused,
+            Err(crate::ShaderError::Unsupported {
+                what: "a descriptor's address or format read as data",
+                ..
+            })
+        ),
+        "{:?}",
+        refused.err()
+    );
 }

@@ -27,7 +27,16 @@ const FIRST: u32 = 16;
 /// [`ir::build`] of `native`'s code as the hardware runs it, with the loads
 /// of a spilled user-data table rewritten ([`user_data`]).
 pub fn build(native: &NativeProgram) -> Result<Program, ShaderError> {
-    let mut p = ir::build(&native.patched_code(), native.wave64, native.vgprs)?;
+    build_bounded(native, &std::collections::HashMap::new())
+}
+
+/// [`build`], with the largest M0 each relative move can see
+/// ([`ir::build_bounded`]).
+pub fn build_bounded(
+    native: &NativeProgram,
+    m0_max: &std::collections::HashMap<usize, u8>,
+) -> Result<Program, ShaderError> {
+    let mut p = ir::build_bounded(&native.patched_code(), native.wave64, native.vgprs, m0_max)?;
     user_data(&mut p, native);
     Ok(p)
 }
