@@ -9845,6 +9845,8 @@ impl<'a> Lower<'a> {
                     let ln = self.unary(23, texels);
                     let per_ln2 = self.s.m.f32(std::f32::consts::LOG2_E.to_bits());
                     let lod = self.s.m.bin(c, Bin::Mul, ln, per_ln2);
+                    // The sample's own clamp (`_cl`) is a floor on the level.
+                    let lod = if has_cl { self.binary(35, lod, clamp) } else { lod };
                     args.extend(&os);
                     args.push(lod);
                     self.s.op(

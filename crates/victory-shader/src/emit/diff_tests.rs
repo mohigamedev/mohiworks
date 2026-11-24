@@ -1088,6 +1088,155 @@ fn float_semantics_are_the_consoles() {
     assert!((one - 0.841_470_96).abs() < 1e-4, "{one}");
 }
 
+/// Cube samples with gradients (`image_sample_d(_cl)` on a cube): the
+/// console takes face-space gradients, the translation samples at the
+/// level they give. A cube whose level `n` holds `n` (plus 10 × the face)
+/// under a trilinear sampler returns the level picked. Lanes sample every
+/// face at levels 0.3..3.87, with and without a clamp of 2.5; each
+/// gradient is 4 × the direction plus a tangent of known length, so it
+/// lies on the direction's face and its face-space derivative is half the
+/// tangent: level = log2(32 × |tangent| / 2). (Off the face's centre only
+/// on positive faces: on negative ones the console compiler's projection
+/// adds a term for the gradient's major component.) Tolerance 0.02 of a
+/// level: the hardware keeps the level and trilinear weight to 1/256; the
+/// rest is float rounding. Hardware adapter and WARP; the PC compile of
+/// the same `SampleGrad` (the host's own projection) is printed alongside.
+#[test]
+fn cube_gradients_pick_the_level() {
+    use super::host::{Dispatch, View};
+    let Some((console, pc)) = tools() else {
+        eprintln!("no console or PC compiler; skipped");
+        return;
+    };
+    let dir = std::env::temp_dir().join(format!("victory-cube-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let src = r#"[RootSignature(RS)] [numthreads(32, 1, 1)]
+        void cs(uint i : SV_GroupIndex) {
+            uint ax = i % 3;
+            bool neg = (i & 4) != 0;
+            float sg = neg ? -1.0 : 1.0;
+            float a = neg ? 0.0 : (float(i % 5) - 2.0) * 0.15;
+            float b = neg ? 0.0 : (float(i % 7) - 3.0) * 0.1;
+            float3 p, u, v;
+            if (ax == 0) { p = float3(sg, a, b); u = float3(0, 1, 0); v = float3(0, 0, 1); }
+            else if (ax == 1) { p = float3(a, sg, b); u = float3(1, 0, 0); v = float3(0, 0, 1); }
+            else { p = float3(a, b, sg); u = float3(1, 0, 0); v = float3(0, 1, 0); }
+            float len = exp2(k.y + k.z * i - 4.0);
+            float3 gx = 4.0 * p + (0.6 * u + 0.8 * v) * len;
+            float3 gy = 4.0 * p + (0.8 * u - 0.6 * v) * (0.5 * len);
+            float l = cubet.SampleGrad(smp, p, gx, gy).x;
+            float lc = cubet.SampleGrad(smp, p, gx, gy, k.x).x;
+            outb.Store2(8 * i, asuint(float2(l, lc)));
+        }"#;
+    let cs_c = translate(&compile(&console, &dir, src, "cs", "cs_6_5")).unwrap();
+    if let Ok(mut v) =
+        super::validator::Validator::load(super::validator::Validator::default_path().as_deref())
+    {
+        v.validate(&mut cs_c.dxil.clone()).unwrap();
+    }
+    let cs_p = compile(&pc, &dir, src, "cs", "cs_6_5");
+    let _ = std::fs::remove_dir_all(&dir);
+    // Clamp 2.5, level 0.3 + 0.115 × lane.
+    let k = [2.5f32, 0.3, 0.115, 0.0].map(f32::to_bits);
+    let (size, levels) = (32u32, 6u32);
+    let mut texels = Vec::new();
+    for face in 0..6 {
+        for level in 0..levels {
+            let n = (size >> level) as usize;
+            texels.extend(vec![[(10 * face + level) as f32; 4]; n * n]);
+        }
+    }
+    let dummy = [[0.0f32; 4]];
+    // The UAV table from heap index 5, `cubet` (t8 of the table from 9) at
+    // 17; the sampler table from index 1.
+    let views: Vec<View> = (0..18)
+        .map(|n| match n {
+            5 => View::RawUav(64),
+            17 => View::MippedCube(size, levels, &texels),
+            _ => View::Texture(1, 1, &dummy),
+        })
+        .collect();
+    let linear = D3D12_SAMPLER_DESC {
+        Filter: D3D12_FILTER_MIN_MAG_MIP_LINEAR,
+        AddressU: D3D12_TEXTURE_ADDRESS_MODE_CLAMP,
+        AddressV: D3D12_TEXTURE_ADDRESS_MODE_CLAMP,
+        AddressW: D3D12_TEXTURE_ADDRESS_MODE_CLAMP,
+        MaxAnisotropy: 1,
+        MaxLOD: f32::MAX,
+        ..Default::default()
+    };
+    let samplers = [linear, linear];
+    let want: Vec<f32> = (0..32u32)
+        .flat_map(|i| {
+            let face = (i % 3 * 2 + u32::from(i & 4 != 0)) as f32;
+            let level = 0.3 + 0.115 * i as f32;
+            [10.0 * face + level, 10.0 * face + level.max(2.5)]
+        })
+        .collect();
+    let mut ran = 0;
+    for (label, warp) in [("hardware", false), ("warp", true)] {
+        let Ok(host) = Host::new(warp) else {
+            eprintln!("no SM 6.6 {label} device; skipped");
+            continue;
+        };
+        let run = |root: &ID3D12RootSignature, pso: &ID3D12PipelineState, roots| {
+            let out = host
+                .dispatch(
+                    root,
+                    pso,
+                    &Dispatch {
+                        roots,
+                        views: &views,
+                        samplers: &samplers,
+                        groups: [1, 1, 1],
+                    },
+                )
+                .unwrap_or_else(|e| panic!("{label}: {e}"));
+            out[0]
+                .iter()
+                .map(|&x| f32::from_bits(x))
+                .collect::<Vec<f32>>()
+        };
+        let (root, pso) = host.compute_pipeline(&cs_c).unwrap();
+        let ours = run(
+            &root,
+            &pso,
+            vec![(0, Root::Constants(user_data(&cs_c, &k)))],
+        );
+        // SAFETY: the PC container carries its root signature.
+        let root_p: ID3D12RootSignature =
+            unsafe { host.device.CreateRootSignature(0, &cs_p) }.unwrap();
+        let pso_p = host.compute_pipeline_with(&root_p, &cs_p).unwrap();
+        let table = |sampler, index| Root::Table { sampler, index };
+        let theirs = run(
+            &root_p,
+            &pso_p,
+            vec![
+                (0, Root::Constants(k.to_vec())),
+                (2, table(true, 1)),
+                (3, table(false, 5)),
+                (6, table(false, 9)),
+            ],
+        );
+        let worst = |a: &[f32]| {
+            a.iter()
+                .zip(&want)
+                .map(|(x, y)| (x - y).abs())
+                .fold(0.0f32, f32::max)
+        };
+        eprintln!(
+            "{label}: worst level difference {:.4} (the host's own SampleGrad: {:.4})",
+            worst(&ours),
+            worst(&theirs)
+        );
+        for (n, (x, y)) in ours.iter().zip(&want).enumerate() {
+            assert!((x - y).abs() <= 0.02, "{label}: lane {} {x} vs {y}", n / 2);
+        }
+        ran += 1;
+    }
+    assert!(ran > 0, "no SM 6.6 device");
+}
+
 /// Equal bits, both zero (the console's legacy multiply gives +0 where PC
 /// code gives -0), or two normal floats within 1e-3 relative.
 fn close(a: u32, b: u32) -> bool {
