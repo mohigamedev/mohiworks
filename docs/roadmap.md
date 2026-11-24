@@ -75,6 +75,133 @@ Facts the review confirmed in code:
   trading correct effects for frames. It is part of the cache key, so
   precompile with the same setting.
 
+## Round 2 findings (2026-11-24)
+
+This round adds a run on the low profile with all shaders precompiled.
+Smoke result:
+- The run lasted 520 s; in the world the median frame was 764 ms
+  (1.3 fps).
+- About 900 draws were dropped per frame, with 600-800 host pipelines
+  still being made.
+- Shaders: 421 cache hits, 0 misses. The pipeline backlog is now the
+  driver's half only.
+- Peak commit was 24.4 GB.
+- It ended in a title fatal at `+0x63966f`.
+
+Five read-only design reviews followed. Their designs are below.
+
+### A. Title fatals are object-pool exhaustion
+
+Both fatals (`+0x5149aec` in run 2, `+0x63966f` in run 3) are the
+title's lock-free handle pools running empty. The pools hold 17-bit slot
+indices, at most 131,070 live objects, and an empty pool reads
+`head == 0x1fffe`, which matched `rax` in both crashes.
+- Run 2: pool cell RVA `0xabbe2e8`, about 2,170 users. The pool was
+  emptied by a typed-factory batch job on 6 workers.
+- Run 3: pool cell RVA `0x98d79a8`. A scene or entity proxy registration
+  (`0x3e54a70`) appends handles.
+
+The pools fill steadily and free on some later event, so something
+VIctory does delays or blocks the frees. Hypotheses, in order:
+1. A deferred free waits on a fence, event or frame completion that
+   signals late or never.
+2. Under memory pressure, an allocation failure is reported as success.
+3. Slow frames let the simulation create objects faster than the render
+   side retires them.
+
+Experiments:
+- Diag build with `VICTORY_STACKS=60,120,180,240`: is the render thread
+  advancing as the crash nears?
+- Fence and event values over time (`d3d12x.rs` `GetCompletedValue`,
+  fence events).
+- Repeat with 8+ GB commit free.
+- Run with `VICTORY_SHADER_LOOP_LIMIT=16`, faster frames, and see
+  whether the crash moves.
+
+### B. Physical-page remaps (the texture-refresh stall)
+
+`XMemMapPhysicalPagesScatter` (`xmem.rs:639`) remaps page by page. Each
+call takes the remap lock, and `unmap` (`xmem.rs:797-840`) unmaps the
+whole surrounding view and maps its head and tail again, so one
+scatter costs O(pages × view length). Texture refreshes
+(`texture.rs:667-677`) hold the reader side, and the lock prefers
+writers, so refreshes convoy behind it. Fixes:
+- (a) Coalesce scatter into runs under one lock, and batch `map_alias`.
+- (b) Skip a remap that would show the same section slice at the same
+  address. This is the cheapest fix and likely the biggest.
+- (c) Split big views into 64 KiB views once, so later edits cost O(page).
+- (d) Make `VICTORY_TEXTURE_NO_WAIT` the default after checking how it
+  retries.
+
+The estimate is 70-90 % of the "hold still" wait (unmeasured). Add
+counters for calls, pages, runs, skips and lock hold time.
+
+### C. Host pipeline prebuild (missing models)
+
+- **Recipes.** `early-pipelines.txt` holds one-way keys only. Add
+  `pipeline-recipes.bin`, with the containers in a content-addressed side
+  store. Write it at first `note_used`. Each record holds the kind, the
+  stage and full container hash of each shader, and the raw stream
+  subobjects, replayed through `GraphicsState::read`. It also holds input
+  elements by value and a priority from the draw count.
+- **Replay.** `victory precompile --pipelines` replays the recipes through
+  `Pending::new` and `make::now`, so the library entries are identical to
+  a run's. Use about 12 workers, with 2-3 at most for heavy compute
+  compiles, and save every 20 s.
+- **Runtime.** Warm-start every recipe at boot. `Queue::pop` serves
+  newest first instead of oldest first. Raise the wait budget only on
+  loading frames. Keep dropping rather than standing in.
+- **Unmeasured.** Make durations are not logged in release builds; add a
+  log line for them first.
+
+### D. Splash flicker and cutscene smoothness
+
+Causes:
+- **Pacing.** The panels here run at 165 Hz, and the 33.3 ms software
+  clock is 5.5 refreshes there, so frames alternate between two lengths.
+  `Present(0,0)` uses a 2-buffer flip-discard chain with no vsync and no
+  waitable object (`host.rs:6080`).
+- **Window.** The window is 3840×2160 on a 1080p or 1440p panel. On a
+  hybrid laptop, DWM may also copy each frame across adapters.
+- **Not dropped draws.** Menus drop none.
+
+Fixes:
+- Use `Present(1,0)` or a waitable chain with `SetMaximumFrameLatency(1)`
+  and 3 buffers.
+- Quantize the frame interval to the panel's refresh.
+- Fit the window to the monitor.
+- Prefer the high-performance adapter.
+- In frames with 60 or fewer draws, hold the last frame while pipelines
+  are not ready, for at most 2-3 s.
+
+The credits stutter is mostly CPU preparation (B and copies) plus the
+500 ms pipeline wait.
+
+### E. In-place title memory (long term)
+
+The rules recorded in `inplace.rs` were measured on WARP only. Stages:
+0. Run `VICTORY_INPLACE_PROBE=2` and the census on the RX 6800M.
+1. `VICTORY_INPLACE=2` for private buffers that shaders mostly write, and
+   hook the title's `VirtualFree` and `VirtualProtect` so the heap is
+   released first.
+2. The physical-page pool as `SEC_COMMIT` sections in 256-512 MiB
+   chunks, one heap per chunk. This conflicts with lazy commit, so decide
+   after the census.
+3. Sparse tiled buffers for 64 KiB reservations, only if the census
+   shows they matter.
+
+Shaders reach raw memory through a page directory, so XCL's 4 GiB
+windows are not needed. Don't combine in-place memory with
+`VICTORY_LATE_WAIT`, and cap pinned memory on 16 GB machines.
+
+### Next order
+
+1. B (a)+(b) with tests and counters.
+2. C, starting with the make-duration log, then recipes.
+3. D: present, window and adapter, plus hold-last-frame.
+4. A: experiments, then a fix.
+5. E stage 0.
+
 ## Phase 0: Measure (do first, small)
 
 Make every later change provable on more than one machine.
