@@ -66,6 +66,34 @@
         <h2>Frame time (ms) <span class="muted" id="adapter"></span></h2>
         <canvas id="chart" height="160"></canvas>
       </div>
+      <div class="card">
+        <h2>Control the game <span class="muted">(during a run or recording; presses are recorded)</span></h2>
+        <div class="pad">
+          <div class="pad-group">
+            <button class="pad-btn" data-key="Q">LB</button>
+            <button class="pad-btn" data-key="E">RB</button>
+            <button class="pad-btn" data-key="Tab">View</button>
+            <button class="pad-btn" data-key="Esc">Menu</button>
+          </div>
+          <div class="pad-group dpad">
+            <button class="pad-btn up" data-key="Up">▲</button>
+            <button class="pad-btn left" data-key="Left">◀</button>
+            <button class="pad-btn right" data-key="Right">▶</button>
+            <button class="pad-btn down" data-key="Down">▼</button>
+          </div>
+          <div class="pad-group face">
+            <button class="pad-btn y" data-key="Y">Y</button>
+            <button class="pad-btn x" data-key="X">X</button>
+            <button class="pad-btn b" data-key="Back">B</button>
+            <button class="pad-btn a" data-key="Enter">A</button>
+          </div>
+          <div class="pad-group">
+            <button class="pad-btn" data-key="F">L-stick</button>
+            <button class="pad-btn" data-key="H">R-stick</button>
+          </div>
+        </div>
+        <label class="inline"><input type="checkbox" id="forward" /> Forward this window's keyboard to the game (Enter, Esc, Tab, Backspace, arrows, letters, digits)</label>
+      </div>
       <div class="split">
         <div class="card">
           <h2>Input <span class="muted">(input-clock seconds)</span></h2>

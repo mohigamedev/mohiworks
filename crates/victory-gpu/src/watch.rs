@@ -457,9 +457,41 @@ fn guard(start: usize, end: usize) -> Option<Vec<usize>> {
         }
         if let Some(from) = run.take() {
             protect(&mut g, from, block);
+            protect_aliases(&mut g, from, block);
         }
     }
     Some(written)
+}
+
+/// Physical pages, not views: the blocks elsewhere that show the same
+/// physical pages as blocks `[from, to)` are guarded too, so a write
+/// through any of them faults into our handler and is seen ([`open`]
+/// dirties every view of the pages). `VICTORY_GUARD_ALIASES=1` turns it on.
+/// Off by default: written for the start screen's flicker (2026-11-25),
+/// which it did not change (the presented frames stayed out of order), so
+/// what it costs per fault buys nothing measured yet.
+fn protect_aliases(g: &mut Guards, from: usize, to: usize) {
+    if !guard_aliases() {
+        return;
+    }
+    for (at, len) in crate::inplace::aliases(from * BLOCK, (to - from) * BLOCK) {
+        let (a_from, a_to) = (at / BLOCK, at.saturating_add(len).div_ceil(BLOCK));
+        let mut run: Option<usize> = None;
+        for block in a_from..=a_to {
+            if block < a_to && !g.protected.contains(&block) {
+                run.get_or_insert(block);
+                continue;
+            }
+            if let Some(start) = run.take() {
+                protect(g, start, block);
+            }
+        }
+    }
+}
+
+fn guard_aliases() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| std::env::var_os("VICTORY_GUARD_ALIASES").is_some_and(|v| v == "1"))
 }
 
 /// Whether `[start, end)` is view memory. The title's views lie in
@@ -565,12 +597,26 @@ fn open(g: &mut Guards, start: usize, end: usize) -> bool {
         .range(start / BLOCK..end.div_ceil(BLOCK))
         .copied()
         .collect();
-    for &block in &blocks {
-        g.protected.remove(&block);
+    let unprotect = |g: &mut Guards, block: usize| {
         g.clean.remove(&block);
-        let mut old = 0;
-        // SAFETY: a block we made read-only.
-        unsafe { VirtualProtect((block * BLOCK) as *const _, BLOCK, PAGE_READWRITE, &mut old) };
+        if g.protected.remove(&block) {
+            let mut old = 0;
+            // SAFETY: a block we made read-only.
+            unsafe { VirtualProtect((block * BLOCK) as *const _, BLOCK, PAGE_READWRITE, &mut old) };
+        }
+    };
+    for &block in &blocks {
+        unprotect(g, block);
+    }
+    // The same pages seen through other views were written too.
+    if guard_aliases() {
+        for &block in &blocks {
+            for (at, len) in crate::inplace::aliases(block * BLOCK, BLOCK) {
+                for alias in at / BLOCK..at.saturating_add(len).div_ceil(BLOCK) {
+                    unprotect(g, alias);
+                }
+            }
+        }
     }
     !blocks.is_empty()
 }
@@ -584,6 +630,19 @@ pub fn writing(at: usize, len: usize) {
     open(&mut guards(), at, at.saturating_add(len));
     // A placed texture there changes with no descriptor written.
     crate::descriptor::host::remapped(at, len);
+}
+
+/// The runtime wrote bytes `[offset, offset + len)` of physical-page
+/// `section` directly, through a view of its own that is no title view
+/// (DirectStorage's page destinations, xmem's `write_physical` and page
+/// windows): every title view showing those pages counts as written, as if
+/// the write had gone through it ([`writing`]). Without this, such writes
+/// were seen only by the 8-frame texture hash: textures streamed into
+/// physical pages showed stale contents for up to 8 frames.
+pub fn physical_written(section: usize, offset: u64, len: usize) {
+    for (at, n) in crate::inplace::shown(section, offset, len) {
+        writing(at, n);
+    }
 }
 
 /// Held shared by a read of title memory in place, and alone by the runtime

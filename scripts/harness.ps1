@@ -140,6 +140,10 @@ function Invoke-Scenario([string]$ScenarioName, $Given = $null) {
         if ($s.keys) { $envs['VICTORY_KEYS'] = $s.keys }
         $events = Join-Path $out 'events.jsonl'
         $envs['VICTORY_EVENTS'] = $events
+        # Live input from the control app: it appends commands here.
+        $control = Join-Path $out 'control.txt'
+        New-Item -ItemType File -Force $control | Out-Null
+        $envs['VICTORY_CONTROL'] = $control
 
         $log = Join-Path $out 'run.log'
         $csv = Join-Path $out 'paging.csv'

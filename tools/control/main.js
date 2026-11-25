@@ -21,6 +21,7 @@ const harnessDir = path.join(process.env.LOCALAPPDATA || '', 'victory', 'harness
 let win = null;
 let job = null; // the running harness command
 let tails = []; // file followers of the current run
+let runDir = null; // the current run's result folder
 
 function send(channel, payload) {
   if (win && !win.isDestroyed()) win.webContents.send(channel, payload);
@@ -87,6 +88,7 @@ function stopTails() {
 // The run's result folder is announced by the harness ("scenario <name> -> <dir>").
 function watchRun(dir) {
   stopTails();
+  runDir = dir;
   send('run-dir', dir);
   tails.push(
     follow(path.join(dir, 'events.jsonl'), (line) => {
@@ -136,6 +138,17 @@ function runHarness(args) {
 
 ipcMain.handle('state', () => state());
 ipcMain.handle('harness', (_e, args) => runHarness(args));
+// Live input: one command line appended to the run's control file, which the
+// layer reads (VICTORY_CONTROL): "press <key> [ms]", "down <key>", "up <key>".
+const KEY = /^(Enter|Esc|Tab|Back|Up|Down|Left|Right|[A-Za-z0-9])$/;
+ipcMain.handle('control', (_e, verb, key, ms) => {
+  if (!job || !runDir) return { error: 'no run to control' };
+  if (!['press', 'down', 'up'].includes(verb) || !KEY.test(key)) return { error: `bad command ${verb} ${key}` };
+  const line = verb === 'press' && ms ? `${verb} ${key} ${Math.round(ms)}\n` : `${verb} ${key}\n`;
+  fs.appendFileSync(path.join(runDir, 'control.txt'), line);
+  return { ok: true };
+});
+
 ipcMain.handle('stop-title', () => {
   return new Promise((resolve) => {
     execFile('taskkill', ['/IM', 'victory.exe', '/F'], (err) => resolve({ ok: !err }));

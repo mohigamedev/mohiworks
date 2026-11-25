@@ -98,6 +98,18 @@ th, td { text-align: left; padding: 5px 8px; border-bottom: 1px solid var(--line
 td.pass { color: var(--good); }
 td.fail { color: var(--bad); }
 tr.clickable { cursor: pointer; }
+.pad { display: flex; flex-wrap: wrap; gap: 18px; align-items: center; margin-bottom: 8px; }
+.pad-group { display: flex; flex-wrap: wrap; gap: 6px; }
+.pad-btn { min-width: 44px; background: transparent; color: var(--accent); }
+.pad-btn:active, .pad-btn.held { background: var(--accent); color: #fff; }
+.dpad, .face { display: grid; grid-template-columns: repeat(3, 40px); grid-template-rows: repeat(3, 32px); gap: 3px; }
+.dpad .pad-btn, .face .pad-btn { min-width: 0; padding: 0; }
+.dpad .up, .face .y { grid-column: 2; grid-row: 1; }
+.dpad .left, .face .x { grid-column: 1; grid-row: 2; }
+.dpad .right, .face .b { grid-column: 3; grid-row: 2; }
+.dpad .down, .face .a { grid-column: 2; grid-row: 3; }
+label.inline { display: flex; align-items: center; gap: 6px; }
+label.inline input { width: auto; display: inline; margin: 0; }
 @media (max-width: 1000px) {
   main { grid-template-columns: 1fr; grid-template-areas: 'controls' 'live' 'results'; }
   .tiles { grid-template-columns: repeat(3, 1fr); }

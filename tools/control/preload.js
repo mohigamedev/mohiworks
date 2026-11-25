@@ -6,6 +6,7 @@ contextBridge.exposeInMainWorld('victory', {
   state: () => ipcRenderer.invoke('state'),
   harness: (args) => ipcRenderer.invoke('harness', args),
   stopTitle: () => ipcRenderer.invoke('stop-title'),
+  control: (verb, key, ms) => ipcRenderer.invoke('control', verb, key, ms),
   open: (which) => ipcRenderer.invoke('open', which),
   on: (channel, handler) => {
     const allowed = ['output', 'event', 'log', 'job', 'state', 'run-dir'];

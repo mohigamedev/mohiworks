@@ -267,11 +267,36 @@ pub(crate) fn place(device: &ID3D12Device, heap: &ID3D12Heap, offset: u64, size:
 struct Views {
     /// By address: bytes, the section's handle, the offset in it.
     views: BTreeMap<usize, (usize, usize, u64)>,
+    /// Each physical page shown more than nowhere: (section, 64 KiB page in
+    /// it) → the 64 KiB blocks of address space that show it ([`aliases`]).
+    /// A direct lookup: the write guards ask it in their fault handler.
+    pages: Option<std::collections::HashMap<(usize, u64), Vec<usize>>>,
     /// Sections by handle: bytes, and whether made committed.
     sections: Vec<(usize, u64, bool)>,
 }
 
-static VIEWS: Mutex<Views> = Mutex::new(Views { views: BTreeMap::new(), sections: Vec::new() });
+static VIEWS: Mutex<Views> = Mutex::new(Views { views: BTreeMap::new(), pages: None, sections: Vec::new() });
+
+impl Views {
+    fn note_pages(&mut self, at: usize, len: usize, section: usize, offset: u64, add: bool) {
+        let pages = self.pages.get_or_insert_with(Default::default);
+        for i in 0..len.div_ceil(K64) {
+            let key = (section, offset / K64 as u64 + i as u64);
+            let block = at / K64 + i;
+            if add {
+                let shown = pages.entry(key).or_default();
+                if !shown.contains(&block) {
+                    shown.push(block);
+                }
+            } else if let Some(shown) = pages.get_mut(&key) {
+                shown.retain(|&b| b != block);
+                if shown.is_empty() {
+                    pages.remove(&key);
+                }
+            }
+        }
+    }
+}
 
 fn views() -> std::sync::MutexGuard<'static, Views> {
     VIEWS.lock().unwrap_or_else(|e| e.into_inner())
@@ -288,7 +313,71 @@ pub fn title_memory_section(section: usize, bytes: u64, committed: bool) {
 /// The runtime mapped `[at, at + len)` as a view of `section` from
 /// `offset` on. Call after [`crate::title_memory_remapped`] of the range.
 pub fn title_memory_view(at: usize, len: usize, section: usize, offset: u64) {
-    views().views.insert(at, (len, section, offset));
+    let mut v = views();
+    if let Some((old_len, old_section, old_offset)) = v.views.insert(at, (len, section, offset)) {
+        v.note_pages(at, old_len, old_section, old_offset, false);
+    }
+    v.note_pages(at, len, section, offset, true);
+}
+
+/// The address ranges that show bytes `[offset, offset + len)` of
+/// `section` (whole 64 KiB blocks): where a write into the physical pages
+/// themselves, not through a view, shows ([`crate::physical_written`]).
+pub(crate) fn shown(section: usize, offset: u64, len: usize) -> Vec<(usize, usize)> {
+    let v = views();
+    let Some(pages) = v.pages.as_ref() else { return Vec::new() };
+    let mut blocks: Vec<usize> = (offset / K64 as u64..(offset + len as u64).div_ceil(K64 as u64))
+        .filter_map(|page| pages.get(&(section, page)))
+        .flatten()
+        .copied()
+        .collect();
+    blocks.sort_unstable();
+    blocks.dedup();
+    let mut joined: Vec<(usize, usize)> = Vec::new();
+    for b in blocks {
+        match joined.last_mut() {
+            Some((a, l)) if *a + *l == b * K64 => *l += K64,
+            _ => joined.push((b * K64, K64)),
+        }
+    }
+    joined
+}
+
+/// The other address ranges that show the same physical pages as
+/// `[at, at + len)`: views of the same section's offsets mapped elsewhere.
+/// A write through one of them changes what the others show, so the write
+/// guards (`watch.rs`) treat them as one ("Physical pages, not views").
+pub(crate) fn aliases(at: usize, len: usize) -> Vec<(usize, usize)> {
+    let v = views();
+    let Some(pages) = v.pages.as_ref().filter(|p| !p.is_empty()) else { return Vec::new() };
+    if len == 0 {
+        return Vec::new();
+    }
+    let end = at.saturating_add(len);
+    let mut out: Vec<(usize, usize)> = Vec::new();
+    let first = v.views.range(..=at).next_back().map_or(at, |(&base, _)| base);
+    for (&base, &(vlen, section, offset)) in v.views.range(first..end) {
+        let (lo, hi) = (at.max(base), end.min(base + vlen));
+        if lo >= hi {
+            continue;
+        }
+        for block in lo / K64..hi.div_ceil(K64) {
+            let page = offset / K64 as u64 + (block - base / K64) as u64;
+            let Some(shown) = pages.get(&(section, page)) else { continue };
+            out.extend(shown.iter().filter(|&&b| b != block).map(|&other| (other * K64, K64)));
+        }
+    }
+    // Consecutive blocks join into one range.
+    out.sort_unstable();
+    out.dedup();
+    let mut joined: Vec<(usize, usize)> = Vec::with_capacity(out.len());
+    for (a, l) in out {
+        match joined.last_mut() {
+            Some((ja, jl)) if *ja + *jl == a => *jl += l,
+            _ => joined.push((a, l)),
+        }
+    }
+    joined
 }
 
 /// What `[at, at + len)` showed is gone ([`crate::title_memory_remapped`]):
@@ -303,7 +392,9 @@ pub(crate) fn views_gone(at: usize, len: usize) {
     let first = v.views.range(..=at).next_back().filter(|(base, view)| *base + view.0 > at).map(|(base, _)| *base);
     let gone: Vec<usize> = first.into_iter().chain(v.views.range(at.saturating_add(1)..end).map(|(base, _)| *base)).collect();
     for base in gone {
-        v.views.remove(&base);
+        if let Some((len, section, offset)) = v.views.remove(&base) {
+            v.note_pages(base, len, section, offset, false);
+        }
     }
 }
 
@@ -1166,5 +1257,36 @@ mod tests {
             views_gone(view as usize, 3 * K64);
             mem::VirtualFree(base as *mut c_void, 0, mem::MEM_RELEASE);
         }
+    }
+
+    /// The addresses that show the same physical pages: views of the same
+    /// section's offsets, also when several views show one offset, and only
+    /// the overlapping part; a view's own range is not its alias, and a
+    /// view that is gone is no alias any more.
+    #[test]
+    fn aliases_are_the_other_views_of_the_same_pages() {
+        // Addresses and a section handle no other test uses (the table is
+        // the process's).
+        const SECTION: usize = 0x5EC7_1000;
+        let a = 0x7A00_0000_0000_usize;
+        let b = 0x7A10_0000_0000_usize;
+        let c = 0x7A20_0000_0000_usize;
+        title_memory_view(a, 4 * K64, SECTION, 0); // pages 0-3
+        title_memory_view(b, 2 * K64, SECTION, 2 * K64 as u64); // pages 2-3
+        title_memory_view(c, 2 * K64, SECTION, 2 * K64 as u64); // pages 2-3 again
+        let mut found = aliases(a + 2 * K64, K64);
+        found.sort();
+        assert_eq!(found, vec![(b, K64), (c, K64)]);
+        // Pages 0-1 have no other view.
+        assert!(aliases(a, 2 * K64).is_empty());
+        // From b: a's pages 2-3 and c.
+        let mut found = aliases(b, 2 * K64);
+        found.sort();
+        assert_eq!(found, vec![(a + 2 * K64, 2 * K64), (c, 2 * K64)]);
+        views_gone(c, 2 * K64);
+        assert_eq!(aliases(b, 2 * K64), vec![(a + 2 * K64, 2 * K64)]);
+        views_gone(a, 4 * K64);
+        views_gone(b, 2 * K64);
+        assert!(aliases(b, 2 * K64).is_empty());
     }
 }

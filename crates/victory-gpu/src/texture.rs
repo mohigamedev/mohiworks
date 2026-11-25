@@ -301,6 +301,36 @@ pub(crate) fn alias(list: &HostList, placed: This, source: This) -> bool {
 ///
 /// What changes for the picture: a texture that arrives while the runtime
 /// is remapping may show a frame later. It never shows partly read.
+/// Diagnostics: a texture the write guards called unwritten had changed
+/// when its turn's hash looked: a write that no guard, watch or
+/// announcement saw. Logged with what memory it lies in (the first 40),
+/// so the missing writer can be found.
+#[cfg(feature = "diagnostics")]
+fn missed_write(memory: *const u8, size: usize, desc: &impl std::fmt::Debug) {
+    use std::sync::atomic::{AtomicU32, Ordering};
+    use windows_sys::Win32::System::Memory::{MEMORY_BASIC_INFORMATION, VirtualQuery};
+    static LOGGED: AtomicU32 = AtomicU32::new(0);
+    if LOGGED.fetch_add(1, Ordering::Relaxed) >= 40 {
+        return;
+    }
+    // SAFETY: plain data filled in by the query.
+    let mut info: MEMORY_BASIC_INFORMATION = unsafe { std::mem::zeroed() };
+    // SAFETY: a valid out pointer of the right size.
+    unsafe { VirtualQuery(memory.cast(), &mut info, size_of_val(&info)) };
+    let aliases = crate::inplace::aliases(memory as usize, size);
+    tracing::warn!(
+        memory = ?memory,
+        size,
+        kind = format_args!("{:#x}", info.Type),
+        protect = format_args!("{:#x}", info.Protect),
+        region = info.RegionSize,
+        aliases = aliases.len(),
+        frame = crate::frame::current(),
+        ?desc,
+        "a texture changed that the write guards called unwritten (a missed writer)"
+    );
+}
+
 fn no_wait() -> bool {
     static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
     *ON.get_or_init(|| std::env::var_os("VICTORY_TEXTURE_NO_WAIT").is_some_and(|v| v == "1"))
@@ -645,9 +675,22 @@ impl Staging {
         // write to the same pages through another view) is still found by
         // the hash, which is taken every eighth frame only, by the
         // texture's address, so the textures take turns.
-        // `VICTORY_TEXTURE_GUARD=0` hashes at every check, as before.
+        // Off by default since 2026-11-25: with it the start screen's logo
+        // animation showed stale images out of order (on screen: 17
+        // distinct images cycling, 46 reversals in 150 grabs; without it
+        // 119 distinct, a smooth fade). Writes the guards missed were not
+        // found at hash time (diagnostics' `missed_write` logged none), nor
+        // were alias views or DirectStorage page writes the cause; how the
+        // guarded path shows stale contents is open (docs/directions.md).
+        // `VICTORY_TEXTURE_GUARD=1` guards view textures again: about 51 ms
+        // and 229 MB less hashing a world frame (run 58), with that fault.
         static GUARD: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-        if *GUARD.get_or_init(|| std::env::var_os("VICTORY_TEXTURE_GUARD").is_none_or(|v| v != "0"))
+        // Diagnostics: the guard called the texture unwritten, and the hash
+        // on its turn is what looks (a change found then is a write the
+        // guards missed, logged below).
+        #[allow(unused_mut, unused_variables, unused_assignments)]
+        let mut guard_said_clean = false;
+        if *GUARD.get_or_init(|| std::env::var_os("VICTORY_TEXTURE_GUARD").is_some_and(|v| v == "1"))
             && let Some((now, written)) = waited(1, || crate::watch::writes(start, start + size, true))
         {
             const HASH_EVERY: u64 = 8;
@@ -656,6 +699,10 @@ impl Staging {
             let turn = crate::frame::current().wrapping_add((start >> 16) as u64).is_multiple_of(HASH_EVERY);
             if unwritten && !turn {
                 return 0;
+            }
+            #[cfg(feature = "diagnostics")]
+            {
+                guard_said_clean = unwritten;
             }
         }
         // From here on the texture's memory may be read in place. Held until
@@ -737,7 +784,12 @@ impl Staging {
         last.hash = Some(hash);
         self.detile(tiled);
         #[cfg(feature = "diagnostics")]
-        crate::copystat::add(crate::copystat::C::TexChanged, size as u64);
+        {
+            crate::copystat::add(crate::copystat::C::TexChanged, size as u64);
+            if guard_said_clean {
+                missed_write(self.memory, size, &self.layout.desc);
+            }
+        }
         size
     }
 

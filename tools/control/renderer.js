@@ -213,4 +213,48 @@ $('record').onclick = () => {
 };
 window.addEventListener('resize', draw);
 
+// Live control: the on-screen pad holds a button while the mouse is down;
+// forwarded keys go down and up with the real key.
+async function control(verb, key) {
+  const r = await window.victory.control(verb, key);
+  if (r && r.error) push($('logs'), r.error);
+}
+document.querySelectorAll('.pad-btn').forEach((b) => {
+  const key = b.dataset.key;
+  b.addEventListener('mousedown', () => {
+    b.classList.add('held');
+    control('down', key);
+  });
+  const release = () => {
+    if (!b.classList.contains('held')) return;
+    b.classList.remove('held');
+    control('up', key);
+  };
+  b.addEventListener('mouseup', release);
+  b.addEventListener('mouseleave', release);
+});
+
+const FORWARD = {
+  Enter: 'Enter', Escape: 'Esc', Tab: 'Tab', Backspace: 'Back',
+  ArrowUp: 'Up', ArrowDown: 'Down', ArrowLeft: 'Left', ArrowRight: 'Right',
+};
+function forwardedKey(e) {
+  if (!$('forward').checked) return null;
+  if (['INPUT', 'SELECT'].includes(document.activeElement.tagName) && document.activeElement.id !== 'forward') return null;
+  if (FORWARD[e.key]) return FORWARD[e.key];
+  return /^[a-zA-Z0-9]$/.test(e.key) ? e.key.toUpperCase() : null;
+}
+window.addEventListener('keydown', (e) => {
+  const key = forwardedKey(e);
+  if (!key) return;
+  e.preventDefault();
+  if (!e.repeat) control('down', key);
+});
+window.addEventListener('keyup', (e) => {
+  const key = forwardedKey(e);
+  if (!key) return;
+  e.preventDefault();
+  control('up', key);
+});
+
 window.victory.state().then(render);

@@ -79,6 +79,37 @@ throughput is about 2.2 makes/s in-game [M].
 [C] (`frame.rs`, `host.rs:6080,6112,6430`). That the flicker comes from
 this is [H].
 
+### R5b. Splash and logo flicker: stale textures from the write guard
+Measured (2026-11-25) with the harness's screen probe
+(`scripts/lib/screen-probe.ps1`, grabs of the window from the desktop)
+and diagnostics captures:
+- **Start screen:** the frames are pixel-identical (40 consecutive
+  captures), and the screen shows 80 identical grabs. Presentation is
+  fine there.
+- **Logo animation after A:** the presented frames themselves cycle
+  through three stale images (period 3: half-formed logo, star only,
+  full logo). On screen: 17 distinct images in 150 grabs, 46 reversals.
+- **`VICTORY_TEXTURE_GUARD=0`:** a smooth fade in the captures, and on
+  screen 119 distinct images and 18 reversals, which is the animation
+  itself.
+
+So the guarded texture path shows stale contents. The texture guard is
+now off by default (fixed). The open question is how, because three
+hypotheses were ruled out by measurement:
+- writes through alias views (a page-index alias guard was built:
+  `VICTORY_GUARD_ALIASES=1`, no change);
+- DirectStorage and `write_physical` page writes (now announced with
+  `physical_written`, no change);
+- writes missed at hash time (the diagnostics `missed_write` log found
+  none).
+
+The guard's purpose was speed: about 51 ms and 229 MB less hashing per
+world frame. Getting that back correctly belongs to D2's class B (write
+tracking by physical page, GPU-side detile), not to this guard.
+
+Not yet measured as a cause: presentation itself (`Present(0,0)`, 2
+buffers, 165 Hz panel). D6 stays.
+
 ### R6. Title handle pools run empty: probably repeated loads, not late frees
 Two lock-free pools of 131,070 slots (cells `0xabbe2e8` and `0x98d79a8`)
 empty out after 6-9 min [M].

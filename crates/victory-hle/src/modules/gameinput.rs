@@ -1269,38 +1269,128 @@ mod host {
         }
     }
 
+    /// The virtual key of a `VICTORY_KEYS` key name.
+    fn key_vk(name: &str) -> Option<u8> {
+        Some(match name.trim() {
+            "Enter" => 0x0D,
+            "Esc" => 0x1B,
+            "Tab" => 0x09,
+            "Back" => 0x08,
+            "Up" => 0x26,
+            "Down" => 0x28,
+            "Left" => 0x25,
+            "Right" => 0x27,
+            k if k.len() == 1 && k.as_bytes()[0].is_ascii_alphanumeric() => k.as_bytes()[0].to_ascii_uppercase(),
+            _ => return None,
+        })
+    }
+
+    /// Keys pressed by script (`VICTORY_KEYS`) or live (`VICTORY_CONTROL`).
     fn scripted() -> Vec<u8> {
         static SCRIPT: LazyLock<(Instant, Vec<(Duration, u8)>)> = LazyLock::new(|| {
             let list = std::env::var("VICTORY_KEYS").unwrap_or_default();
             let keys = list.split(',').filter_map(|entry| {
                 let (at, key) = entry.split_once(':')?;
-                let vk = match key.trim() {
-                    "Enter" => 0x0D,
-                    "Esc" => 0x1B,
-                    "Tab" => 0x09,
-                    "Back" => 0x08,
-                    "Up" => 0x26,
-                    "Down" => 0x28,
-                    "Left" => 0x25,
-                    "Right" => 0x27,
-                    k if k.len() == 1 && k.as_bytes()[0].is_ascii_alphanumeric() => {
-                        k.as_bytes()[0].to_ascii_uppercase()
-                    }
-                    _ => return None,
-                };
-                Some((
-                    Duration::try_from_secs_f64(at.trim().parse().ok()?).ok()?,
-                    vk,
-                ))
+                Some((Duration::try_from_secs_f64(at.trim().parse().ok()?).ok()?, key_vk(key)?))
             });
             (*INPUT_START, keys.collect())
         });
         let (start, keys) = &*SCRIPT;
         let now = start.elapsed();
-        keys.iter()
+        let mut down: Vec<u8> = keys
+            .iter()
             .filter(|&&(at, _)| (at..at + Duration::from_millis(200)).contains(&now))
             .map(|&(_, vk)| vk)
-            .collect()
+            .collect();
+        for vk in controlled() {
+            if !down.contains(&vk) {
+                down.push(vk);
+            }
+        }
+        down
+    }
+
+    /// Live input from the harness control app: `VICTORY_CONTROL=<file>`,
+    /// which the app appends to while the title runs, one command a line:
+    /// `press <key> [ms]` (held that long, default 200), `down <key>`,
+    /// `up <key>`. Keys are named as in `VICTORY_KEYS`; the stand-in pad's
+    /// table makes them pad buttons too. Each change is recorded as an
+    /// input event (device `control`), so a session driven from the app
+    /// records like one played on a pad.
+    fn controlled() -> Vec<u8> {
+        struct Control {
+            path: std::path::PathBuf,
+            offset: u64,
+            rest: String,
+            checked: Option<Instant>,
+            pressed: Vec<(u8, Instant)>,
+            held: Vec<u8>,
+        }
+        static CONTROL: LazyLock<Option<Mutex<Control>>> = LazyLock::new(|| {
+            let path = std::env::var_os("VICTORY_CONTROL")?;
+            Some(Mutex::new(Control {
+                path: path.into(),
+                offset: 0,
+                rest: String::new(),
+                checked: None,
+                pressed: Vec::new(),
+                held: Vec::new(),
+            }))
+        });
+        let Some(control) = CONTROL.as_ref() else { return Vec::new() };
+        let mut c = control.lock().unwrap_or_else(PoisonError::into_inner);
+        let now = Instant::now();
+        // The file at most every 50 ms: input is polled more often.
+        if c.checked.is_none_or(|at| now - at >= Duration::from_millis(50)) {
+            c.checked = Some(now);
+            let mut text = String::new();
+            if let Ok(mut file) = std::fs::File::open(&c.path) {
+                use std::io::{Read, Seek, SeekFrom};
+                if file.seek(SeekFrom::Start(c.offset)).is_ok() && file.read_to_string(&mut text).is_ok() {
+                    c.offset += text.len() as u64;
+                }
+            }
+            if !text.is_empty() {
+                let all = std::mem::take(&mut c.rest) + &text;
+                let (lines, rest) = match all.rfind('\n') {
+                    Some(end) => (all[..end].to_owned(), all[end + 1..].to_owned()),
+                    None => (String::new(), all),
+                };
+                c.rest = rest;
+                for line in lines.lines() {
+                    let mut words = line.split_whitespace();
+                    let (Some(verb), Some(vk)) = (words.next(), words.next().and_then(key_vk)) else { continue };
+                    match verb {
+                        "press" => {
+                            let ms = words.next().and_then(|w| w.parse().ok()).unwrap_or(200u64).clamp(20, 10_000);
+                            c.pressed.push((vk, now + Duration::from_millis(ms)));
+                            record_input("control", vk, true);
+                        }
+                        "down" if !c.held.contains(&vk) => {
+                            c.held.push(vk);
+                            record_input("control", vk, true);
+                        }
+                        "up" => {
+                            if let Some(i) = c.held.iter().position(|&h| h == vk) {
+                                c.held.remove(i);
+                                record_input("control", vk, false);
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+            }
+        }
+        c.pressed.retain(|&(vk, until)| {
+            let on = now < until;
+            if !on {
+                record_input("control", vk, false);
+            }
+            on
+        });
+        let mut down = c.held.clone();
+        down.extend(c.pressed.iter().map(|&(vk, _)| vk));
+        down
     }
 
     /// The foreground window is one of ours (the title's or our fallback).
