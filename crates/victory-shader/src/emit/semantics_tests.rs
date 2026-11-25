@@ -25,6 +25,21 @@ use crate::native::{
 };
 use crate::{gfx10, io, ir, resource, structure};
 
+/// Turns exact 16-bit rounding on for the test's thread while held.
+struct Nearest(Option<bool>);
+
+impl Nearest {
+    fn on() -> Self {
+        Nearest(super::lower::TEST_F16_NEAREST.replace(Some(true)))
+    }
+}
+
+impl Drop for Nearest {
+    fn drop(&mut self) {
+        super::lower::TEST_F16_NEAREST.set(self.0);
+    }
+}
+
 // ---- encodings ----
 
 const S_ENDPGM: u32 = 0xBF81_0000;
@@ -1545,6 +1560,8 @@ fn conversion_probes() -> Vec<Probe> {
 
 #[test]
 fn conversions_match_the_hardware() {
+    // exact 16-bit rounding is opt-in (`VICTORY_F16_NEAREST=1`); these check it
+    let _nearest = Nearest::on();
     assert_clean(check(&passing(conversion_probes())));
 }
 
@@ -2329,6 +2346,8 @@ fn mix_probes() -> Vec<Probe> {
 
 #[test]
 fn mixed_precision_matches_the_hardware() {
+    // exact 16-bit rounding is opt-in (`VICTORY_F16_NEAREST=1`); these check it
+    let _nearest = Nearest::on();
     assert_clean(check(&passing(mix_probes())));
 }
 
@@ -2391,6 +2410,8 @@ fn byte_dot_products_match_the_hardware() {
 /// "Sub-Dword Addressing").
 #[test]
 fn sub_dword_operands_match_the_hardware() {
+    // exact 16-bit rounding is opt-in (`VICTORY_F16_NEAREST=1`); these check it
+    let _nearest = Nearest::on();
     let ints = pairs(U32_EDGES, &U32_EDGES[..12]);
     let floats = unary(F32_EDGES);
     let halves: Vec<[u32; 4]> = half_pairs();
@@ -2850,6 +2871,8 @@ fn constant_compares_run() {
 /// bits 3:2).
 #[test]
 fn f16_results_round_as_the_mode_says() {
+    // exact 16-bit rounding is opt-in (`VICTORY_F16_NEAREST=1`); these check it
+    let _nearest = Nearest::on();
     let setreg = |mode: u32| [0xBA80_0881u32, mode];
     let mut body = setreg(3).to_vec();
     body.push(vop1(0x0A, 5, v(1)));

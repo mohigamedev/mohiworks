@@ -1057,7 +1057,6 @@ pub(super) fn with_local_waves<R>(f: impl FnOnce() -> R) -> R {
 /// the last place of a result that is not exact is then one lower than the console's).
 /// Off by default: it is exact but untried in a game run, and adds instructions to every
 /// such operation. The wave sum of 16-bit floats ([`Lower::half_sum`]) is always exact.
-#[allow(dead_code)] // the 16-bit results now narrow by [`Lower::narrow16`], always to nearest
 fn f16_nearest_on() -> bool {
     #[cfg(test)]
     if let Some(on) = TEST_F16_NEAREST.get() {
@@ -3356,7 +3355,16 @@ impl<'a> Lower<'a> {
     /// conversion rounds as it likes (toward zero on the RX 6700 XT and WARP).
     // shortcut: rounding toward +-infinity, or a mode not known at this
     // point (paths that set it differently join), rounds to nearest even.
+    // shortcut: all of this only with `VICTORY_F16_NEAREST=1` ([`f16_nearest_on`]):
+    // it is some 40 instructions per 16-bit result, and the title's shaders make
+    // many (with it always on, a gameplay frame took 175-210 ms of GPU time
+    // against 40-60). Otherwise the host's conversion, which may round toward
+    // zero, one step of the last place lower where the two differ.
     fn narrow16(&mut self, f: V) -> V {
+        if !f16_nearest_on() {
+            let i32t = self.s.t.i32;
+            return self.s.op(self.cur, "legacyF32ToF16", Attr::ReadNone, i32t, 130, &[f]);
+        }
         let rtz = self.mode16 == Some(3);
         let c = self.cur;
         let x = self.as_int(f);

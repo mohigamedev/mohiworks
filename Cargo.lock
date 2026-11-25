@@ -652,6 +652,7 @@ dependencies = [
  "clap",
  "memchr",
  "victory-core",
+ "victory-formats",
  "victory-game",
  "victory-gpu",
  "victory-hle",

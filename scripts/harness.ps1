@@ -3,6 +3,15 @@
   The test harness: runs the title in repeatable scenarios and records results.
 
 .DESCRIPTION
+  audit: checks the title's content without running it, against the last
+  audit: every shader in the game's archive, the pipelines and the texture
+  descriptions earlier runs recorded (layouts, detiles, CPU cost). Run it
+  after a translator or texture change, before any scenario:
+    .\scripts\harness.ps1 audit
+
+  Heavy features get their own scenarios, run on demand (world-rt: the
+  ray-tracing structure builder on).
+
   A scenario (scenarios/<name>.json in the repo) names:
     seconds     how long to run
     console     series-s | series-x (default series-s: 1080p, the one a
@@ -38,7 +47,7 @@
   .\scripts\harness.ps1 run-all
 #>
 param(
-    [Parameter(Position = 0)][ValidateSet('list', 'run', 'run-all', 'snapshot', 'restore', 'record')]
+    [Parameter(Position = 0)][ValidateSet('list', 'run', 'run-all', 'snapshot', 'restore', 'record', 'audit')]
     [string]$Command = 'list',
     [Parameter(Position = 1)][string]$Name = '',
     [switch]$Keep,
@@ -75,8 +84,18 @@ function Get-TitleData {
 }
 
 function Copy-Folder([string]$From, [string]$To) {
-    if (Test-Path $To) { Remove-Item -Recurse -Force $To }
-    Copy-Item -Recurse $From $To
+    # Mirrored in place (robocopy /MIR): a file the title just stopped may
+    # hold for a moment is retried, and the folder is never emptied first.
+    # (Removing it first once left the data folder half deleted when one
+    # file stayed locked, and the next run backed up that half.)
+    if (-not (Test-Path $From)) { throw "no $From to copy" }
+    $r = Start-Process robocopy -ArgumentList "`"$From`" `"$To`" /MIR /R:20 /W:1 /NFL /NDL /NJH /NJS /NP" -Wait -PassThru -WindowStyle Hidden
+    if ($r.ExitCode -ge 8) { throw "copying $From to $To failed (robocopy $($r.ExitCode))" }
+}
+
+# A data folder worth backing up: the title's settings file is in it.
+function Test-TitleData([string]$Dir) {
+    return [bool](Get-ChildItem $Dir -Recurse -Filter settings.xml -ErrorAction SilentlyContinue | Select-Object -First 1)
 }
 
 # Writes a preset into the title's settings file (XML), element by element.
@@ -126,6 +145,84 @@ function Invoke-Prepare([hashtable]$Envs, [string]$Log) {
     }
 }
 
+# The offline audit: what the title's content needs, found without running
+# it. Shaders: every shader in the game's archive translated (cached
+# translations are only looked up). Pipelines: the recipes earlier runs
+# recorded, built for this machine. Textures: the descriptions earlier runs
+# recorded, laid out and detiled on the CPU, with the cost of each kind.
+# The result is compared with the last audit: new failure reasons and
+# higher counts are reported, and the audit fails if a count went up.
+function Invoke-Audit {
+    $stamp = Get-Date -Format 'yyyyMMdd-HHmmss'
+    $root = Join-Path $paths.Harness 'audits'
+    $last = Get-ChildItem $root -Directory -ErrorAction SilentlyContinue | Sort-Object Name | Select-Object -Last 1
+    $out = Join-Path $root $stamp
+    New-Item -ItemType Directory -Force $out | Out-Null
+    $envs = @{ VICTORY_PROFILE = 'low' }
+    $saved = @{}
+    foreach ($k in $envs.Keys) {
+        $saved[$k] = [Environment]::GetEnvironmentVariable($k, 'Process')
+        [Environment]::SetEnvironmentVariable($k, [string]$envs[$k], 'Process')
+    }
+    try {
+        $pc = Join-Path $out 'precompile.log'
+        cmd /c "`"`"$($paths.Victory)`" precompile --pipelines > `"$pc`" 2>&1`""
+        $tx = Join-Path $out 'textures.log'
+        $tj = Join-Path $out 'textures.json'
+        cmd /c "`"`"$($paths.Victory)`" audit textures --json `"$tj`" > `"$tx`" 2>&1`""
+    }
+    finally {
+        foreach ($k in $saved.Keys) { [Environment]::SetEnvironmentVariable($k, $saved[$k], 'Process') }
+    }
+
+    $a = [ordered]@{ shaders = 0; shaders_failed = 0; reasons = [ordered]@{}; pipelines = 0; pipelines_failed = 0; pipeline_failures = @() }
+    $section = ''
+    foreach ($line in Get-Content $pc) {
+        if ($line -match '^done\s+(\d+) shaders: .*, (\d+) failed') {
+            $a.shaders = [int]$Matches[1]; $a.shaders_failed = [int]$Matches[2]; $section = 'reasons'; continue
+        }
+        if ($line -match '^done\s+(\d+) pipelines: .*, (\d+) failed') {
+            $a.pipelines = [int]$Matches[1]; $a.pipelines_failed = [int]$Matches[2]; $section = 'pipelines'; continue
+        }
+        if ($section -eq 'reasons' -and $line -match '^\s+(\d+)\s+(.+)$') { $a.reasons[$Matches[2].Trim()] = [int]$Matches[1]; continue }
+        if ($section -eq 'pipelines' -and $line -match '^\s+failed\s+(.+)$') { $a.pipeline_failures += $Matches[1].Trim(); continue }
+        if ($line -match '^(slowest|replaying|recipes)') { if ($line -match '^slowest') { $section = '' } }
+    }
+    $t = $null
+    if (Test-Path $tj) { $t = Get-Content $tj -Raw | ConvertFrom-Json }
+    $a.textures = $t
+    $a | ConvertTo-Json -Depth 6 | Set-Content (Join-Path $out 'audit.json') -Encoding utf8
+
+    Write-Host "audit          $out"
+    Write-Host ("shaders        {0} found, {1} do not translate" -f $a.shaders, $a.shaders_failed)
+    foreach ($r in $a.reasons.Keys) { Write-Host ("  {0,6}  {1}" -f $a.reasons[$r], $r) }
+    Write-Host ("pipelines      {0} recorded, {1} fail on this machine" -f $a.pipelines, $a.pipelines_failed)
+    if ($t) {
+        $nl = 0; foreach ($p in $t.no_layout.PSObject.Properties) { $nl += $p.Value }
+        Write-Host ("textures       {0} recorded, {1} without a console layout, {2} fail to detile" -f $t.descriptions, $nl, $t.detile_failures)
+        foreach ($p in $t.no_layout.PSObject.Properties) { Write-Host ("  {0,6}  no layout: {1}" -f $p.Value, $p.Name) }
+        $top = @($t.kinds | Sort-Object { -[double]$_.ms } | Select-Object -First 5)
+        foreach ($k in $top) { Write-Host ("  detile  format {0,3} swizzle {1,2}: {2,6} textures, {3,8:N1} ms" -f $k.format, $k.swizzle, $k.textures, [double]$k.ms) }
+    } else {
+        Write-Host 'textures       none recorded yet (a run records them)'
+    }
+
+    if (-not $last) { Write-Host 'baseline       first audit: nothing to compare'; return $true }
+    $b = Get-Content (Join-Path $last.FullName 'audit.json') -Raw | ConvertFrom-Json
+    $worse = @()
+    if ($a.shaders_failed -gt $b.shaders_failed) { $worse += "shaders failing $($b.shaders_failed) -> $($a.shaders_failed)" }
+    if ($a.pipelines_failed -gt $b.pipelines_failed) { $worse += "pipelines failing $($b.pipelines_failed) -> $($a.pipelines_failed)" }
+    foreach ($r in $a.reasons.Keys) {
+        $old = 0; $prop = $b.reasons.PSObject.Properties[$r]; if ($prop) { $old = [int]$prop.Value }
+        if ($a.reasons[$r] -gt $old) { $worse += "reason '$r' $old -> $($a.reasons[$r])" }
+    }
+    if ($t -and $b.textures -and $t.detile_failures -gt $b.textures.detile_failures) { $worse += "texture detile failures $($b.textures.detile_failures) -> $($t.detile_failures)" }
+    Write-Host ("against        {0}: shaders failing {1} -> {2}, pipelines failing {3} -> {4}" -f $last.Name, $b.shaders_failed, $a.shaders_failed, $b.pipelines_failed, $a.pipelines_failed)
+    if ($worse) { foreach ($w in $worse) { Write-Host "WORSE          $w" }; return $false }
+    Write-Host 'PASS audit: nothing got worse'
+    return $true
+}
+
 function Test-Pass($r, $pass) {
     $fails = @()
     if (-not $pass) { $pass = [pscustomobject]@{} }
@@ -163,6 +260,10 @@ function Invoke-Scenario([string]$ScenarioName, $Given = $null) {
 
     $title = Get-TitleData
     $backup = Join-Path $paths.Harness 'backup\data'
+    if (-not (Test-TitleData $title)) {
+        throw "the data folder $title has no settings file: not backing it up. Put a good one back first (harness.ps1 restore, or copy a snapshot)"
+    }
+    if (Test-Path $backup) { Copy-Folder $backup "$backup.prev" }
     Copy-Folder $title $backup
     $envs = @{}
     $run = $null
@@ -255,6 +356,32 @@ function ConvertTo-Keys([string]$Events) {
     return ($keys -join ',')
 }
 
+# Full power for runs: when the scheduled tasks VictoryTurbo / VictorySilent
+# exist (outside the repo: the machine's own fan and power modes, set by a
+# task with admin rights), a run switches to Turbo first, and afterwards
+# back to Silent while it is before $QuietUntil o'clock (the machine stays
+# in Turbo after that). Without the tasks nothing changes.
+$QuietUntil = 9
+function Test-PowerTask([string]$Name) {
+    cmd /c "schtasks /query /tn $Name >nul 2>&1"
+    return $LASTEXITCODE -eq 0
+}
+function Enter-FullPower {
+    if (Test-PowerTask 'VictoryTurbo') {
+        cmd /c "schtasks /run /tn VictoryTurbo >nul 2>&1"
+        Write-Host 'power          Turbo for this run'
+        Start-Sleep -Seconds 3
+    }
+}
+function Exit-FullPower {
+    if ((Get-Date).Hour -lt $QuietUntil -and (Test-PowerTask 'VictorySilent')) {
+        cmd /c "schtasks /run /tn VictorySilent >nul 2>&1"
+        Write-Host "power          back to Silent (quiet until $($QuietUntil):00)"
+    }
+}
+
+if ($Command -in 'run', 'run-all', 'audit', 'record') { Enter-FullPower }
+try {
 switch ($Command) {
     'record' {
         if (-not $Name) { throw 'record needs a scenario name' }
@@ -309,6 +436,9 @@ switch ($Command) {
         if (-not $Name) { throw 'run needs a scenario name' }
         if (-not (Invoke-Scenario $Name)) { exit 1 }
     }
+    'audit' {
+        if (-not (Invoke-Audit)) { exit 1 }
+    }
     'run-all' {
         $failed = 0
         foreach ($f in Get-ChildItem $scenarioDir -Filter *.json) {
@@ -321,4 +451,8 @@ switch ($Command) {
         }
         if ($failed) { exit 1 }
     }
+}
+}
+finally {
+    if ($Command -in 'run', 'run-all', 'audit', 'record') { Exit-FullPower }
 }

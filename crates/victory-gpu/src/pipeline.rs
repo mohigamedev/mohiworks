@@ -723,6 +723,13 @@ pub fn use_pipeline_cache(dir: std::path::PathBuf) {
     library::use_pipeline_cache(dir);
 }
 
+/// The pipeline cache folder, once chosen (also where a run's texture
+/// census is kept: `crate::texture_census`).
+#[cfg(windows)]
+pub fn cache_dir() -> Option<&'static std::path::Path> {
+    library::cache_dir()
+}
+
 /// Saves the pipeline cache now if anything was added (at the end of a run).
 #[cfg(windows)]
 pub fn save_pipeline_cache() {

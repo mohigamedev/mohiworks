@@ -3,6 +3,7 @@
 //! Every command reads the user's own files and writes only to stdout or to
 //! the user's cache directory (outside the repository).
 
+mod audit;
 mod census;
 mod inspect;
 mod precompile;
@@ -101,6 +102,18 @@ enum Command {
         #[arg(long)]
         pipelines: bool,
     },
+    /// Check, without the title, what earlier runs recorded: `textures`
+    /// (the texture descriptions runs saw: layouts, detiles, CPU cost).
+    Audit {
+        #[arg(value_enum)]
+        what: AuditWhat,
+        /// The recorded file (default: the one in the cache folder).
+        #[arg(long)]
+        file: Option<PathBuf>,
+        /// Also write a JSON summary here.
+        #[arg(long)]
+        json: Option<PathBuf>,
+    },
     /// Prepare, map and bind a title executable; with --execute, run it.
     Run {
         exe: PathBuf,
@@ -123,6 +136,11 @@ enum Command {
     },
     /// Show the resolved configuration and check it.
     Config,
+}
+
+#[derive(Clone, Copy, ValueEnum)]
+enum AuditWhat {
+    Textures,
 }
 
 #[derive(Clone, Copy, ValueEnum)]
@@ -180,6 +198,7 @@ fn main() -> Result<()> {
             translate::run(paths, validate, pipelines, list, jobs)
         }
         Command::Precompile { paths, jobs, pipelines } => precompile::run(paths, jobs, pipelines),
+        Command::Audit { what: AuditWhat::Textures, file, json } => audit::textures(file, json),
         Command::Run {
             exe,
             unimplemented,

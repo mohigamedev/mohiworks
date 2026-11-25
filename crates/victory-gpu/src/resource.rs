@@ -136,6 +136,44 @@ pub(crate) fn element(format: u32) -> Option<(u64, u64)> {
 /// gives it (`victory-hle`'s `xg` serves the same): the description's
 /// layout field is `0x100 | swizzle mode`, 1 linear, 0 the library's pick.
 pub(crate) fn texture_layout(desc: &ResourceDesc) -> Option<texture::Texture> {
+    let t = console_texture_layout(desc);
+    if desc.dimension != BUFFER {
+        crate::texture_census::note(crate::texture_census::Seen {
+            dimension: desc.dimension,
+            width: desc.width,
+            height: desc.height,
+            depth_or_array: desc.depth_or_array_size,
+            mips: desc.mip_levels,
+            format: desc.format,
+            samples: desc.sample_count,
+            layout: desc.layout,
+            flags: desc.flags,
+            laid_out: t.is_some(),
+        });
+    }
+    t
+}
+
+/// The console layout VIctory gives a texture description a run recorded
+/// (`texture_census`), for offline checks.
+#[cfg(windows)]
+pub fn census_layout(seen: &crate::texture_census::Seen) -> Option<texture::Texture> {
+    console_texture_layout(&ResourceDesc {
+        dimension: seen.dimension,
+        alignment: 0,
+        width: seen.width,
+        height: seen.height,
+        depth_or_array_size: seen.depth_or_array,
+        mip_levels: seen.mips,
+        format: seen.format,
+        sample_count: seen.samples,
+        sample_quality: 0,
+        layout: seen.layout,
+        flags: seen.flags,
+    })
+}
+
+fn console_texture_layout(desc: &ResourceDesc) -> Option<texture::Texture> {
     use texture::{Dimension, Swizzle, TextureDesc};
     const TEXTURE_1D: u32 = 2;
     const TEXTURE_2D: u32 = 3;

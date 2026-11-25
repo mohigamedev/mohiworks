@@ -23,6 +23,7 @@ walkdir.workspace = true
 [target.'cfg(windows)'.dependencies]
 # `victory precompile` fills the runtime's shader cache directly.
 victory-gpu.workspace = true
+victory-formats.workspace = true
 
 [features]
 # Debug-level logs and the debugging switches (frame capture, stack dumps,

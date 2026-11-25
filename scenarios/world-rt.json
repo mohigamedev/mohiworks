@@ -1,0 +1,17 @@
+{
+  "description": "As world-continue, with the ray-tracing structure builder on (VICTORY_BVH_BUILDER=1): its own run, apart from the everyday route. Drops a frame and memory safety of the builder.",
+  "seconds": 400,
+  "preset": "low",
+  "keys": "3..core_restofworld001/2:Enter,94.8@core_restofworld001:Enter:604,131@core_restofworld001:Enter:2503,240.8@core_restofworld001:Enter:3008",
+  "env": {
+    "VICTORY_PROFILE": "low",
+    "VICTORY_RELAY": "2",
+    "VICTORY_PIPELINE_WAIT_MS": "24",
+    "VICTORY_BVH_BUILDER": "1"
+  },
+  "pass": {
+    "reach_world": true,
+    "max_crashes": 0,
+    "max_removals": 0
+  }
+}
