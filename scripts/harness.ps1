@@ -365,6 +365,15 @@ function Invoke-Scenario([string]$ScenarioName, $Given = $null) {
     $r = Read-VictoryLog -Log $log -Csv $csv
     $fails = Test-Pass $r $s.pass
     if ($run -and $run.Hang) { $fails += "hang: $($run.Hang.reason) (hang-meta.json, hang.dmp)" }
+    # A run the title ended early, or a host GPU failure that ended it, is
+    # not a pass even with no removal or crash counted (2026-11-25: shared
+    # memory ran out, a list did not close, the title exited at 132 s).
+    if ($run -and $run.Exited -and -not $s.pass.may_exit -and $run.Ran -lt $s.seconds - 15) {
+        $fails += "the title exited after $($run.Ran) s of $($s.seconds)"
+    }
+    if ((Test-Path $log) -and (Select-String -Path $log -Pattern '^VIctory: host GPU failure' -Quiet)) {
+        $fails += 'host GPU failure (run.log)'
+    }
     $commit = (git -C $script:RepoRoot rev-parse --short HEAD) 2>$null
     $dirty = [bool]((git -C $script:RepoRoot status --porcelain --untracked-files=no) 2>$null)
     $result = [ordered]@{

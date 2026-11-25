@@ -960,6 +960,27 @@ fn into_destination(
         return fill(out).map(drop);
     }
     let offset = (request.page_offset & 0xffff) as usize;
+    let count = (offset + len).div_ceil(PAGE);
+    // unverified(nda): the title enqueues a request and fills its page list
+    // afterwards, before the console reads it; a read started early (when
+    // half the queue fills) can see page number 0, never a page. Copying the
+    // list at enqueue made almost every read see 0 (2026-11-25), so the list
+    // is read here and a 0 waited for. | src=call | id=A012
+    // shortcut: waits 200 ms at most, then the request fails as before.
+    let waited = std::time::Instant::now();
+    // SAFETY: as below; read volatile, the title may be writing it.
+    while (0..count).any(|i| unsafe { request.destination.cast::<usize>().add(i).read_volatile() } == 0) {
+        if waited.elapsed() > std::time::Duration::from_millis(200) {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(1));
+    }
+    if waited.elapsed() > std::time::Duration::from_millis(2) {
+        static SAID: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+        if SAID.fetch_add(1, std::sync::atomic::Ordering::Relaxed) < 20 {
+            tracing::info!(ms = waited.elapsed().as_millis() as u64, count, "dstorage: waited for a request's page list to be filled");
+        }
+    }
     // SAFETY: the title passes a page number per 64 KiB of destination,
     // which holds at least `len` bytes from `offset`.
     let pages = unsafe {

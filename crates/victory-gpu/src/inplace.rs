@@ -35,6 +35,9 @@
 //!   `VirtualProtect` fail with error 87), nor unmap a view in it. Pages
 //!   outside the opened part are free to change.
 
+#[cfg_attr(not(test), allow(dead_code))]
+mod tiles;
+
 use std::collections::BTreeMap;
 use std::ffi::c_void;
 use std::sync::Mutex;
@@ -114,7 +117,8 @@ fn most() -> u64 {
 /// or not private memory committed whole, because the host refused,
 /// because of [`most`]; and what was let go because its memory changed.
 /// [8]: since the start, how many were placed in a section of physical pages.
-static STATS: [AtomicU64; 9] = [const { AtomicU64::new(0) }; 9];
+/// [9]: of those, how many reach past what the title mapped.
+static STATS: [AtomicU64; 10] = [const { AtomicU64::new(0) }; 10];
 
 /// A buffer placed over title memory, and its heap.
 pub(crate) struct Placed {
@@ -162,10 +166,22 @@ pub(crate) fn place_for(start: u64, len: u64, window: bool) -> Option<Placed> {
     // can stand under a heap; any other cannot (the heap pins its pages,
     // and the runtime remaps views).
     let covered = cover(start as usize, len as usize);
-    if let Cover::Run(section, offset) = covered
+    // One run of a section, or one run from the start with nothing mapped
+    // after it (the title's window reaches past what it mapped yet; the
+    // console would fault on a read there, so the title makes none, and
+    // when it maps more there the remapping lets this go).
+    let run = match covered {
+        Cover::Run(section, offset) => Some((section, offset, false)),
+        Cover::Holes => run_then_holes(start as usize, len as usize).map(|(section, offset)| (section, offset, true)),
+        _ => None,
+    };
+    if let Some((section, offset, holes)) = run
         && let Some(host) = crate::host::host()
-        && let Some(placed) = place_in_section(&host.device, section, offset, start, len, window)
+        && let Some(placed) = place_in_section(&host.device, &|| host.video_memory().map(|m| m[2].saturating_sub(m[3])), section, offset, start, len, window)
     {
+        if holes && placed.is_some() {
+            STATS[9].fetch_add(1, Ordering::Relaxed);
+        }
         return placed;
     }
     if covered != Cover::None && !in_whole_view(start as usize, len as usize) {
@@ -212,7 +228,18 @@ static SECTIONS_OPEN: AtomicU64 = AtomicU64::new(0);
 /// (what is placed is let go then, as for any remapping). `None` if the
 /// section is not one that can be opened (the caller goes on as before);
 /// `Some(None)` if it was turned down or refused.
-fn place_in_section(device: &ID3D12Device, section: usize, offset: u64, start: u64, len: u64, window: bool) -> Option<Option<Placed>> {
+/// `room`: the card's shared memory budget left (opening a section
+/// spends it all at once; past the budget the host's own buffers fail,
+/// 2026-11-25), `None` if unknown.
+fn place_in_section(
+    device: &ID3D12Device,
+    room: &dyn Fn() -> Option<u64>,
+    section: usize,
+    offset: u64,
+    start: u64,
+    len: u64,
+    window: bool,
+) -> Option<Option<Placed>> {
     let bytes_of_section = views().sections.iter().find(|s| s.0 == section && s.2).map(|s| s.1)?;
     let at = offset & !(K64 as u64 - 1);
     let bytes = (offset + len.max(1)).next_multiple_of(K64 as u64) - at;
@@ -224,7 +251,10 @@ fn place_in_section(device: &ID3D12Device, section: usize, offset: u64, start: u
         match heaps.iter().find(|h| h.0 == section) {
             Some(h) => h.1.clone(),
             None => {
-                if SECTIONS_OPEN.load(Ordering::Relaxed) + bytes_of_section > most() {
+                const HEADROOM: u64 = 1 << 30;
+                if SECTIONS_OPEN.load(Ordering::Relaxed) + bytes_of_section > most()
+                    || room().is_some_and(|room| room < bytes_of_section + HEADROOM)
+                {
                     STATS[6].fetch_add(1, Ordering::Relaxed);
                     return Some(None);
                 }
@@ -312,7 +342,7 @@ fn say() {
     let s: Vec<u64> = STATS.iter().map(|s| s.load(Ordering::Relaxed)).collect();
     tracing::info!(
         "title memory in place: {} windows {} MB, {} title buffers {} MB (no copy, no refresh, no copy-back); turned down: {} view memory or not private memory committed whole, \
-         {} refused by the host, {} over VICTORY_INPLACE_MB; {} let go because their memory changed; {} placed in sections of physical pages so far, {} MB of sections open",
+         {} refused by the host, {} over VICTORY_INPLACE_MB or the card's shared budget; {} let go because their memory changed; {} placed in sections of physical pages so far ({} reaching past what is mapped), {} MB of sections open",
         s[0],
         s[1] >> 20,
         s[2],
@@ -322,6 +352,7 @@ fn say() {
         s[6],
         s[7],
         s[8],
+        s[9],
         SECTIONS_OPEN.load(Ordering::Relaxed) >> 20
     );
 }
@@ -541,6 +572,27 @@ fn cover_in(views: &BTreeMap<usize, (usize, usize, u64)>, at: usize, len: usize)
         reached += bytes;
     }
     if one { Cover::Run(first.0, first.1) } else { Cover::Scattered }
+}
+
+/// If `[at, at + len)` is one run of one section from `at` on and then
+/// nothing mapped to its end: the section and the offset of `at` in it.
+fn run_then_holes_in(views: &BTreeMap<usize, (usize, usize, u64)>, at: usize, len: usize) -> Option<(usize, u64)> {
+    let end = at + len.max(1);
+    let (&base, &(bytes, section, offset)) = views.range(..=at).next_back().filter(|(base, view)| *base + view.0 > at)?;
+    let first = offset + (at - base) as u64;
+    let mut reached = base + bytes;
+    while reached < end {
+        match views.get(&reached) {
+            Some(&(bytes, s, o)) if s == section && o == first + (reached - at) as u64 => reached += bytes,
+            Some(_) => return None,
+            None => break,
+        }
+    }
+    (reached < end && views.range(reached..end).next().is_none()).then_some((section, first))
+}
+
+fn run_then_holes(at: usize, len: usize) -> Option<(usize, u64)> {
+    run_then_holes_in(&views().views, at, len)
 }
 
 /// [`Cover`] of `[at, at + len)` by the title's views as they are now.
@@ -1436,7 +1488,7 @@ mod tests {
             let (start, len) = (base as u64 + 0x100, 2 * K64 as u64);
             let Cover::Run(s, offset) = cover(start as usize, len as usize) else { panic!("one run") };
             assert_eq!((s, offset), (section, 3 * K64 as u64 + 0x100));
-            let placed = place_in_section(&device, s, offset, start, len, true).expect("a committed section").expect("placed");
+            let placed = place_in_section(&device, &|| None, s, offset, start, len, true).expect("a committed section").expect("placed");
             assert_eq!(placed.bias, 0x100);
             let mut rig = Rig::new(&device).unwrap();
             fill(start as *mut u8, len as usize, 9);
@@ -1457,12 +1509,34 @@ mod tests {
         }
     }
 
+    /// A run then nothing mapped is placeable; a hole in the middle, a
+    /// second section, or nothing at the start is not.
+    #[test]
+    fn a_run_then_holes_is_told_apart() {
+        let mut v = BTreeMap::new();
+        let at = 0x10_0000_0000usize;
+        v.insert(at, (2 * K64, 7, 4 * K64 as u64));
+        assert_eq!(run_then_holes_in(&v, at + 16, 5 * K64), Some((7, 4 * K64 as u64 + 16)));
+        v.insert(at + 2 * K64, (K64, 7, 6 * K64 as u64));
+        assert_eq!(run_then_holes_in(&v, at, 5 * K64), Some((7, 4 * K64 as u64)));
+        // Mapped again after a hole: not one run then holes.
+        v.insert(at + 4 * K64, (K64, 7, 8 * K64 as u64));
+        assert_eq!(run_then_holes_in(&v, at, 5 * K64), None);
+        // All mapped as one run is a run, not this.
+        assert_eq!(run_then_holes_in(&v, at, 3 * K64), None);
+        // Another section next: no.
+        v.insert(at + 3 * K64, (K64, 9, 0));
+        assert_eq!(run_then_holes_in(&v, at, 6 * K64), None);
+        // Nothing at the start.
+        assert_eq!(run_then_holes_in(&v, at - K64, 2 * K64), None);
+    }
+
     /// A reserved section is not opened: the caller copies as before.
     #[test]
     fn a_reserved_section_is_left_to_copies() {
         let Some(device) = warp() else { return };
         title_memory_section(0x5eed, 4 * K64 as u64, false);
-        assert!(place_in_section(&device, 0x5eed, 0, 0x7000_0000, K64 as u64, true).is_none());
+        assert!(place_in_section(&device, &|| None, 0x5eed, 0, 0x7000_0000, K64 as u64, true).is_none());
         title_memory_section_gone(0x5eed);
     }
 
