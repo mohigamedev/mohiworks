@@ -3,7 +3,7 @@
 //! harness sees as `milestone` events (`VICTORY_EVENTS`).
 //!
 //! A milestone is reached the first time the title opens a file through
-//! DirectStorage, named by the file's stem in lower case: Grand Theft Auto
+//! DirectStorage, named by the file's stem in lower case: the title
 //! VI opens `core_restofworld001.rpf` as the start screen is accepted, so
 //! `core_restofworld001` marks "the world is loading". Names are the
 //! title's file names, so nothing here knows a title.
