@@ -63,7 +63,8 @@ pub(crate) fn probe_level() -> u8 {
     *LEVEL.get_or_init(|| std::env::var("VICTORY_INPLACE_PROBE").ok().and_then(|v| v.trim().parse().ok()).unwrap_or(0))
 }
 
-/// `VICTORY_INPLACE`: 0 (unset) off. 1: a window of title memory outside
+/// `VICTORY_INPLACE`: unset 2 (off in tests and with `VICTORY_COPY_MEMORY`), 0
+/// off. 1: a window of title memory outside
 /// buffers that lies in private memory committed whole is not copied: a
 /// part of the title's allocation is opened as a host heap and the window
 /// is a buffer placed over it ([`place_for`]). 2: title buffers too,
@@ -87,7 +88,17 @@ pub(crate) fn probe_level() -> u8 {
 /// call before such a call once it takes them over.
 pub(crate) fn level() -> u8 {
     static LEVEL: std::sync::OnceLock<u8> = std::sync::OnceLock::new();
-    *LEVEL.get_or_init(|| std::env::var("VICTORY_INPLACE").ok().and_then(|v| v.trim().parse().ok()).unwrap_or(0))
+    *LEVEL.get_or_init(|| {
+        let asked = std::env::var("VICTORY_INPLACE").ok().and_then(|v| v.trim().parse().ok());
+        // `VICTORY_COPY_MEMORY` (any value but 0) is the diagnostic switch
+        // for copies everywhere, as in the tree this was taken from.
+        let copies = std::env::var("VICTORY_COPY_MEMORY").is_ok_and(|v| v.trim() != "0");
+        match asked {
+            Some(level) => level,
+            None if copies || cfg!(test) => 0,
+            None => 2,
+        }
+    })
 }
 
 /// The most title memory in place at once, in bytes
@@ -121,7 +132,14 @@ pub(crate) struct Placed {
 pub(crate) fn place_part(device: &ID3D12Device, start: u64, len: u64) -> Result<Placed, Option<windows::core::Error>> {
     let at = start & !(K64 as u64 - 1);
     let bytes = (start + len.max(1)).next_multiple_of(K64 as u64) - at;
-    if !private_whole(at as usize, bytes as usize) {
+    // Write guards (read-only blocks of other trackers) split the region
+    // and would refuse the GPU's writes: open them first. Once the heap
+    // stands the pages are pinned and no guard can be put on them again.
+    let view = in_whole_view(at as usize, bytes as usize);
+    if !committed_whole(at as usize, bytes as usize, view) && !cfg!(test) {
+        crate::watch::writing(at as usize, bytes as usize);
+    }
+    if !committed_whole(at as usize, bytes as usize, view) {
         return Err(None);
     }
     let heap = open(device, From::Part(at as usize, bytes as usize)).map_err(Some)?;
@@ -138,8 +156,11 @@ pub(crate) fn place_for(start: u64, len: u64, window: bool) -> Option<Placed> {
     if level() < if window { 1 } else { 2 } {
         return None;
     }
-    // View memory: known from the runtime without asking Windows.
-    if cover(start as usize, len as usize) != Cover::None {
+    // View memory: known from the runtime without asking Windows. A view
+    // the runtime shows whole and never remaps ([`title_memory_whole`])
+    // can stand under a heap; any other cannot (the heap pins its pages,
+    // and the runtime remaps views).
+    if cover(start as usize, len as usize) != Cover::None && !in_whole_view(start as usize, len as usize) {
         STATS[4].fetch_add(1, Ordering::Relaxed);
         return None;
     }
@@ -434,19 +455,42 @@ pub(crate) fn cover(at: usize, len: usize) -> Cover {
     cover_in(&views().views, at, len)
 }
 
+/// Views the runtime shows whole and never remaps: start, bytes.
+static WHOLE: Mutex<Vec<(usize, usize)>> = Mutex::new(Vec::new());
+
+/// The runtime shows `[at, at + len)` as one view of physical pages that it
+/// will not unmap or map again (`VICTORY_INPLACE_VIEWS`): memory that can
+/// be opened as a host heap, as private memory is.
+pub fn title_memory_whole(at: usize, len: usize) {
+    let mut whole = WHOLE.lock().unwrap_or_else(|e| e.into_inner());
+    whole.retain(|w| w.0 != at);
+    whole.push((at, len));
+}
+
+/// Whether `[at, at + len)` lies in a view shown whole.
+fn in_whole_view(at: usize, len: usize) -> bool {
+    let whole = WHOLE.lock().unwrap_or_else(|e| e.into_inner());
+    !whole.is_empty() && whole.iter().any(|&(w, n)| w <= at && at + len <= w + n)
+}
+
 /// Whether `[at, at + len)` is private memory, all committed and
 /// read-write: what [`From::Part`] takes. One question to Windows (it
 /// walks the page tables to the end of the pages that share the first
 /// one's state: a millisecond in the title's big blocks, so ask when a
 /// copy is made, not when it is used).
 pub(crate) fn private_whole(at: usize, len: usize) -> bool {
+    committed_whole(at, len, false)
+}
+
+/// [`private_whole`], or with `view` the same of a mapped view.
+fn committed_whole(at: usize, len: usize, view: bool) -> bool {
     // SAFETY: plain data filled in by the query.
     let mut info: mem::MEMORY_BASIC_INFORMATION = unsafe { std::mem::zeroed() };
     // SAFETY: a valid out pointer of the right size.
     let n = unsafe { mem::VirtualQuery(at as *const c_void, &mut info, size_of_val(&info)) };
     n != 0
         && info.State == mem::MEM_COMMIT
-        && info.Type == mem::MEM_PRIVATE
+        && info.Type == if view { mem::MEM_MAPPED } else { mem::MEM_PRIVATE }
         && info.Protect == mem::PAGE_READWRITE
         && (info.BaseAddress as usize).saturating_add(info.RegionSize) >= at.saturating_add(len)
 }
@@ -1236,6 +1280,43 @@ mod tests {
             assert_ne!(mem::VirtualFree(base.add(2 * K64).cast(), K64, mem::MEM_DECOMMIT), 0);
             assert!(matches!(place_part(&device, start, len), Err(None)));
             mem::VirtualFree(base.cast(), 0, mem::MEM_RELEASE);
+        }
+    }
+
+    /// A view of a section that the runtime shows whole is opened like
+    /// private memory and the GPU reads and writes its bytes; any other
+    /// view is turned down without asking the host.
+    #[test]
+    fn warp_a_whole_view_is_placed_and_another_view_is_not() {
+        let Some(device) = warp() else { return };
+        if device.cast::<ID3D12Device13>().is_err() {
+            return;
+        }
+        use windows_sys::Win32::System::Memory::{CreateFileMappingW, FILE_MAP_WRITE, MapViewOfFile, SEC_COMMIT, UnmapViewOfFile};
+        // SAFETY: a section and a view of the test's own.
+        unsafe {
+            let section = CreateFileMappingW(-1isize as _, std::ptr::null(), mem::PAGE_READWRITE | SEC_COMMIT, 0, 4 * K64 as u32, std::ptr::null());
+            assert!(!section.is_null());
+            let view = MapViewOfFile(section, FILE_MAP_WRITE, 0, 0, 4 * K64);
+            let base = view.Value as usize;
+            assert_ne!(base, 0);
+            let (start, len) = (base as u64 + 0x40, 3 * K64 as u64);
+            title_memory_view(base, 4 * K64, section as usize, 0);
+            assert!(matches!(place_part(&device, start, len), Err(None)), "a view that may be remapped");
+            title_memory_whole(base, 4 * K64);
+            let placed = place_part(&device, start, len).unwrap_or_else(|e| panic!("not placed: {e:?}"));
+            let mut rig = Rig::new(&device).unwrap();
+            fill(start as *mut u8, len as usize, 3);
+            let got = rig.fetch(&placed.buffer, placed.bias, len as usize).unwrap();
+            assert!(same(start as *const u8, &got), "the GPU reads the view's bytes");
+            rig.store(&placed.buffer, placed.bias + 8, &[0x5a; 32]).unwrap();
+            assert!(same((start + 8) as *const u8, &[0x5a; 32]), "the GPU's write is in the view");
+            drop(rig);
+            drop(placed);
+            WHOLE.lock().unwrap().retain(|w| w.0 != base);
+            views_gone(base, 4 * K64);
+            UnmapViewOfFile(view);
+            windows_sys::Win32::Foundation::CloseHandle(section);
         }
     }
 
