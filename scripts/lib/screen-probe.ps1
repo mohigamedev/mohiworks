@@ -16,6 +16,26 @@ public static class ScreenProbeWin32 {
 }
 '@
 
+# Saves the title's window as a PNG, scaled to $Width pixels wide: what is
+# on screen now (for following a run, or deciding the next input).
+function Save-Screen {
+    param([string]$Path, [int]$Width = 960, [string]$Process = 'victory')
+    [ScreenProbeWin32]::SetProcessDPIAware() | Out-Null
+    $p = Get-Process $Process -ErrorAction SilentlyContinue | Where-Object { $_.MainWindowHandle -ne 0 } | Select-Object -First 1
+    if (-not $p) { throw "no window of $Process" }
+    $r = New-Object ScreenProbeWin32+RECT
+    [ScreenProbeWin32]::GetWindowRect($p.MainWindowHandle, [ref]$r) | Out-Null
+    $w = $r.Right - $r.Left; $h = $r.Bottom - $r.Top
+    $full = New-Object System.Drawing.Bitmap $w, $h
+    $g = [System.Drawing.Graphics]::FromImage($full)
+    $g.CopyFromScreen($r.Left, $r.Top, 0, 0, $full.Size)
+    $g.Dispose()
+    $sh = [int]($h * $Width / $w)
+    $small = New-Object System.Drawing.Bitmap $full, $Width, $sh
+    $small.Save($Path, [System.Drawing.Imaging.ImageFormat]::Png)
+    $small.Dispose(); $full.Dispose()
+}
+
 function Measure-Screen {
     param([int]$Count = 60, [int]$IntervalMs = 25, [string]$Process = 'victory')
     [ScreenProbeWin32]::SetProcessDPIAware() | Out-Null

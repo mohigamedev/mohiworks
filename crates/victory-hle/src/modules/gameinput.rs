@@ -1287,11 +1287,16 @@ mod host {
 
     /// Keys pressed by script (`VICTORY_KEYS`) or live (`VICTORY_CONTROL`).
     fn scripted() -> Vec<u8> {
-        static SCRIPT: LazyLock<(Instant, Vec<(Duration, u8)>)> = LazyLock::new(|| {
+        // `<seconds>:<key>[:<held ms>]` (held 200 ms unless given: a
+        // cutscene is skipped by holding A for seconds).
+        static SCRIPT: LazyLock<(Instant, Vec<(Duration, u8, Duration)>)> = LazyLock::new(|| {
             let list = std::env::var("VICTORY_KEYS").unwrap_or_default();
             let keys = list.split(',').filter_map(|entry| {
-                let (at, key) = entry.split_once(':')?;
-                Some((Duration::try_from_secs_f64(at.trim().parse().ok()?).ok()?, key_vk(key)?))
+                let mut parts = entry.split(':');
+                let at = Duration::try_from_secs_f64(parts.next()?.trim().parse().ok()?).ok()?;
+                let vk = key_vk(parts.next()?)?;
+                let held = parts.next().and_then(|ms| ms.trim().parse().ok()).unwrap_or(200u64).clamp(20, 60_000);
+                Some((at, vk, Duration::from_millis(held)))
             });
             (*INPUT_START, keys.collect())
         });
@@ -1299,8 +1304,8 @@ mod host {
         let now = start.elapsed();
         let mut down: Vec<u8> = keys
             .iter()
-            .filter(|&&(at, _)| (at..at + Duration::from_millis(200)).contains(&now))
-            .map(|&(_, vk)| vk)
+            .filter(|&&(at, _, held)| (at..at + held).contains(&now))
+            .map(|&(_, vk, _)| vk)
             .collect();
         for vk in controlled() {
             if !down.contains(&vk) {

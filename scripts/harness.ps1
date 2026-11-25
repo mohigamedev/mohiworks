@@ -45,7 +45,9 @@ param(
     [string]$Env = '',
     [int]$Seconds = 1800,
     # record: also save the data folder as this snapshot when the title closes.
-    [string]$SnapshotAs = ''
+    [string]$SnapshotAs = '',
+    # Skip the prepare step (shader cache brought up to date before a run).
+    [switch]$NoPrepare
 )
 
 $ErrorActionPreference = 'Stop'
@@ -89,6 +91,33 @@ function Set-Preset([string]$TitleData, [string]$Preset) {
     Write-Host "preset         $Preset ($changed settings written)"
 }
 
+# The prepare step: `victory precompile` with the run's switches, so every
+# shader the title ships is translated (and, once recipes exist, every host
+# pipeline built) before the run instead of during it. The cache keys on the
+# switches (VICTORY_PROFILE, ...), so this runs with them set. A warm cache
+# takes seconds.
+function Invoke-Prepare([hashtable]$Envs, [string]$Log) {
+    $saved = @{}
+    foreach ($k in $Envs.Keys) {
+        $saved[$k] = [Environment]::GetEnvironmentVariable($k, 'Process')
+        [Environment]::SetEnvironmentVariable($k, [string]$Envs[$k], 'Process')
+    }
+    try {
+        $pcArgs = 'precompile'
+        # Host pipelines too, when this build of victory can replay recipes.
+        $help = cmd /c "`"$($paths.Victory)`" precompile --help 2>&1"
+        if (($help | Out-String) -match '--pipelines') { $pcArgs += ' --pipelines' }
+        # Through cmd: Windows PowerShell 5.1 turns a native program's
+        # stderr (our log lines) into terminating errors under 'Stop'.
+        cmd /c "`"`"$($paths.Victory)`" $pcArgs > `"$Log`" 2>&1`""
+        $done = Select-String -Path $Log -Pattern '^done|^pipelines' | ForEach-Object { $_.Line.Trim() }
+        foreach ($line in $done) { Write-Host "prepare        $line" }
+    }
+    finally {
+        foreach ($k in $saved.Keys) { [Environment]::SetEnvironmentVariable($k, $saved[$k], 'Process') }
+    }
+}
+
 function Test-Pass($r, $pass) {
     $fails = @()
     if (-not $pass) { $pass = [pscustomobject]@{} }
@@ -128,6 +157,7 @@ function Invoke-Scenario([string]$ScenarioName, $Given = $null) {
     $backup = Join-Path $paths.Harness 'backup\data'
     Copy-Folder $title $backup
     $envs = @{}
+    $run = $null
     try {
         if ($s.snapshot) {
             $snap = Join-Path $paths.Harness "snapshots\$($s.snapshot)"
@@ -138,6 +168,7 @@ function Invoke-Scenario([string]$ScenarioName, $Given = $null) {
         if ($s.preset) { Set-Preset $title $s.preset }
         if ($s.env) { foreach ($p in $s.env.PSObject.Properties) { $envs[$p.Name] = [string]$p.Value } }
         if ($s.keys) { $envs['VICTORY_KEYS'] = $s.keys }
+        if (-not $NoPrepare) { Invoke-Prepare $envs (Join-Path $out 'precompile.log') }
         $events = Join-Path $out 'events.jsonl'
         $envs['VICTORY_EVENTS'] = $events
         # Live input from the control app: it appends commands here.
@@ -159,7 +190,8 @@ function Invoke-Scenario([string]$ScenarioName, $Given = $null) {
         }
     }
     finally {
-        if ($SnapshotAs) {
+        # Only a run that happened leaves an end state worth keeping.
+        if ($SnapshotAs -and $run) {
             Copy-Folder $title (Join-Path $paths.Harness "snapshots\$SnapshotAs")
             Write-Host "snapshot       '$SnapshotAs' saved from the run's end state"
         }
@@ -189,14 +221,28 @@ function Invoke-Scenario([string]$ScenarioName, $Given = $null) {
 }
 
 # The scripted-keys form (VICTORY_KEYS) of the presses recorded in an
-# events file: every replayable key or pad press, at its input-clock time.
-# Held keys (movement) replay as one 0.2 s press: tune those by hand.
+# events file: every replayable key or pad press at its input-clock time,
+# with how long it was held when that was more than a tap
+# (`<seconds>:<key>:<ms>`; a cutscene skips on a held A).
 function ConvertTo-Keys([string]$Events) {
-    $keys = @()
+    $inv = [Globalization.CultureInfo]::InvariantCulture
+    $presses = New-Object System.Collections.ArrayList
+    $open = @{}
     foreach ($line in Get-Content $Events) {
         $e = $line | ConvertFrom-Json
-        if ($e.kind -ne 'input' -or -not $e.down -or $e.name -like 'vk*') { continue }
-        $keys += ('{0}:{1}' -f [math]::Round([double]$e.it, 1).ToString([Globalization.CultureInfo]::InvariantCulture), $e.name)
+        if ($e.kind -ne 'input' -or $e.name -like 'vk*') { continue }
+        $id = "$($e.device)/$($e.name)"
+        if ($e.down) {
+            $open[$id] = $presses.Add([pscustomobject]@{ At = [double]$e.it; Name = $e.name; Ms = 200 })
+        } elseif ($open.ContainsKey($id)) {
+            $p = $presses[$open[$id]]
+            $p.Ms = [int](([double]$e.it - $p.At) * 1000)
+            $open.Remove($id)
+        }
+    }
+    $keys = foreach ($p in $presses) {
+        $at = [math]::Round($p.At, 1).ToString($inv)
+        if ($p.Ms -gt 400) { "${at}:$($p.Name):$($p.Ms)" } else { "${at}:$($p.Name)" }
     }
     return ($keys -join ',')
 }
