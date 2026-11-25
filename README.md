@@ -144,7 +144,7 @@ Each is described in a comment where it is read.
 - The interior of the first gameplay room is sometimes not drawn after the cutscene hands over to gameplay.
 - Around 24 GB of memory is in use during play.
 - A few style lints are switched off for this fork in the workspace `Cargo.toml` until the newer code is tidied.
-- Many changes here are specific to this title and this GPU, and some are marked `shortcut:` in the code where they approximate what the console does.
+- Many changes here are specific to this title and this GPU, and some are marked `shortcut:` in the code where they approximate what we believe the console does; that behaviour is inferred from the title's calls and public sources, not verified against platform documentation.
 
 
 # VIctory
@@ -190,7 +190,7 @@ What each part does today and what it still needs:
 | GPU: menus | Draws, compute and presentation on host D3D12; only changed title memory is copied | Frame pacing drifts on one screen in release builds |
 | GPU: world | Mesh pipelines, shader-written buffers, descriptor lifetimes, indirect execution (arguments clamped), pipelines made by worker threads and kept on disk | Most of the scene is still missing (untranslated shaders drop draws); frames take seconds; real queries, depth bounds, HDR and scaling are missing |
 | Shaders | Console GPU code recompiled to DXIL at first use, cached on disk. Menus: all. World: mesh 8,191 of 8,506, vertex/pixel 10,617 of 12,346, compute 1,643 of 2,539 | 64-bit image atomics, merged geometry stages, the ray-tracing builder's shaders; some compute programs need a GPU with 64-lane waves |
-| Textures | Console tiled layouts and detiling for the modes the title uses | Render-target metadata planes |
+| Textures | Tiled layouts and detiling for the modes the title uses, from AMD's public address library (as in Mesa); whether the console's modes match is unverified | Render-target metadata planes |
 | Series S mode | Runs through the menus to the loading screen | The world, as above |
 
 ## Getting started
@@ -300,6 +300,10 @@ cargo build --profile diag -p victory --features diagnostics   # target\diag\vic
 
 Every build appends crashes and host GPU failures to `crashes.log` in the
 title's data folder.
+
+These are crashes of the title *under VIctory*: they describe our layer's
+behaviour, never the console's. Crash and hang data about the title itself
+comes only from real console hardware.
 
 ## License
 

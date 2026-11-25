@@ -28,7 +28,7 @@ shader precompiled.
 | World | 0.5-2.3 fps, median 764 ms/frame. The GPU is only 5-30 % busy [M] |
 | Shaders | All precompiled: 25,586 of 25,889 translate, and a run has 0 cache misses [M] |
 | Host pipelines | 600-1900 still being made by the driver. 441-3897 draws are dropped per frame, which is why models are missing [M] |
-| Stability | No device loss on the low profile. The title stops itself after 6-9 min: its handle pools run empty [M] |
+| Stability | No device loss on the low profile. Under this layer the title stops itself after 6-9 min: its handle pools run empty [M] (layer-observed; no console data) |
 | Memory | 24.4 GB peak commit on 15.4 GB of RAM. The page file is now 64-96 GB [M] |
 | Display | The splash judders: a 33.3 ms clock on a 165 Hz panel, `Present(0,0)`, and a 4K window [C][H] |
 
@@ -147,9 +147,11 @@ tracking by physical page, GPU-side detile), not to this guard.
 Not yet measured as a cause: presentation itself (`Present(0,0)`, 2
 buffers, 165 Hz panel). D6 stays.
 
-### R6. Title handle pools run empty: probably repeated loads, not late frees
-Two lock-free pools of 131,070 slots (cells `0xabbe2e8` and `0x98d79a8`)
-empty out after 6-9 min [M].
+### R6. Under this layer, title handle pools run empty: probably repeated loads, not late frees
+Under VIctory, two lock-free pools of 131,070 slots (cells `0xabbe2e8` and
+`0x98d79a8`) empty out after 6-9 min [M]. This is the title's behaviour in
+our layer, not a console observation: we have no console data, and console
+crash or hang data comes only from real hardware.
 
 Static analysis of the free paths [C, title disassembly]:
 - **No fence, frame or deferred-release gate exists on either free path.**
@@ -157,8 +159,8 @@ Static analysis of the free paths [C, title disassembly]:
   reset (`0x54ea20`, called from teardown code). Its allocation is a
   registration job (`0x3e54a70`, job `0x9d9da0`), one proxy per model
   element, appended to an owner array that is never trimmed during a
-  session. On the console this works because each model is registered
-  once per load.
+  session. Presumably each model is registered once per load where the
+  title runs as designed [H]; we cannot observe the console.
 - Pool P2 (`0xabbe2e8`) is freed by its object's deleting destructor
   (`0x51f2ab0`): teardown plus virtual delete. Its runtime trigger was
   not traced.
@@ -169,7 +171,9 @@ driven by something the layer reports: memory status, short or failed
 reads, "not ready" results, or remap stalls. Fence lag is deprioritized:
 the free paths read no fence.
 
-The fix is to make the layer answer as the console would. Never enlarge
+The fix is to make the layer answer as the title expects, judged by the
+title's own checks and code [C]; what the console actually answers is NDA
+material we do not have (see `docs/assumptions.md` once it exists). Never enlarge
 or free the pools from outside: the 17-bit indices are in the title's
 code, and live handles reference the slots.
 
@@ -185,7 +189,10 @@ A survey of what the executable carries [C, static analysis]:
 | Pool creation | One generic constructor with about 596 call sites, each passing the pool's name hash (joaat), element size and global cell. About 590 distinct pools. Names resolve with a joaat dictionary: 13 so far, for example Object, Building, Peds, Vehicles, CTask, InteriorInst, CWeapon |
 
 So names come from the engine's hashed pool names and function bounds,
-not from `class::method`. The two crash pools resolve:
+not from `class::method`. They are our dictionary's resolutions of the
+title's own hashes and our own labels ("Object pool"), inferred under this
+layer: not symbols. Real symbols for the title exist only on the
+publisher's side, and exact symbolication needs exactly matching symbols. The two crash pools resolve:
 - **`0xabbe2e8` is the engine's "Object" pool** (element 0x110). The crash
   site is its allocator, shared with "Building" by an entity-type
   dispatch.
@@ -193,8 +200,8 @@ not from `class::method`. The two crash pools resolve:
   0x100).
 
 Each pool's capacity comes from one config lookup function
-(`0x50cef40`). That gives a place to read each pool's real capacity at
-run time, and an engine-level hook point. The 17-bit index caps capacity
+(`0x50cef40`). That gives a place to read each pool's configured capacity, as
+the title reads it under VIctory, at run time, and an engine-level hook point. The 17-bit index caps capacity
 at 131,070, so raising a capacity is a fallback, not the fix for R6.
 
 ## 3. Directions
@@ -372,8 +379,8 @@ hardware underneath.
 ### D7. Root-cause the pool exhaustion (R6)
 One decisive run, no title changes:
 1. A diagnostics thread logs, every 2 s, the live counts of both pools
-   (`*(u32*)(*(u64*)(base+cell)+0x10)`) and their real capacities (D5's
-   pool table), beside the frame line. A steady rise with frames means a
+   (`*(u32*)(*(u64*)(base+cell)+0x10)`) and their configured capacities as
+   read under VIctory (D5's pool table), beside the frame line. A steady rise with frames means a
    leak; a rise only while loading means repeated loads.
 2. A breakpoint hook at `0x3e54a70` (the registration job) counts hits
    and logs the model pointer. The same models registered again and
@@ -385,6 +392,9 @@ One decisive run, no title changes:
    An unchanged growth rate clears fences.
 
 This becomes a D0 scenario (world-soak with pool counters).
+
+Every result of D7 is layer-observed: it shows what the title does under
+VIctory and what our layer answered, not how the console behaves.
 
 ## 4. Order (proposed, for review)
 
