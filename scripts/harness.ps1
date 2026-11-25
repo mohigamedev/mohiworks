@@ -364,6 +364,7 @@ function Invoke-Scenario([string]$ScenarioName, $Given = $null) {
 
     $r = Read-VictoryLog -Log $log -Csv $csv
     $fails = Test-Pass $r $s.pass
+    if ($run -and $run.Hang) { $fails += "hang: $($run.Hang.reason) (hang-meta.json, hang.dmp)" }
     $commit = (git -C $script:RepoRoot rev-parse --short HEAD) 2>$null
     $dirty = [bool]((git -C $script:RepoRoot status --porcelain --untracked-files=no) 2>$null)
     $result = [ordered]@{
@@ -371,6 +372,7 @@ function Invoke-Scenario([string]$ScenarioName, $Given = $null) {
         console = $console; snapshot = $s.snapshot; preset = $s.preset; keys = $s.keys; env = $envs
         seconds = $s.seconds; ran = $run.Ran; exited_by_itself = $run.Exited
         result = $r; passed = ($fails.Count -eq 0); failures = $fails
+        hang = $(if ($run) { $run.Hang } else { $null })
     }
     # The exact builds that ran (the run's `build` event): this layer's
     # CodeView key (its PDB in the symbol store) and the title's identity.

@@ -79,3 +79,5 @@ Thumbs.db
 
 # The harness control app's dependencies (npm install in tools/control).
 node_modules/
+# Dumps of our process hold game memory: never in the repo.
+*.dmp
