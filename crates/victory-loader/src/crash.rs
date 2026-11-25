@@ -44,6 +44,14 @@ pub fn save_on_crash(ranges: Vec<(usize, usize, std::path::PathBuf)>) {
 
 /// The file crash reports are appended to, besides being printed.
 static LOG: std::sync::OnceLock<std::path::PathBuf> = std::sync::OnceLock::new();
+/// The build identity line written before every crash log entry, so each
+/// entry names the exact build (and PDB key) it came from.
+static HEADER: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+
+/// Sets the build identity line every crash log entry starts with.
+pub fn set_crash_header(line: String) {
+    let _ = HEADER.set(line);
+}
 
 /// Also appends every unhandled-exception report and panic to `file`, so a
 /// crash can be read after the console is gone.
@@ -78,7 +86,8 @@ fn append_to_log(text: &str) {
         .map_or(0, |d| d.as_secs());
     let opened = std::fs::OpenOptions::new().create(true).append(true).open(file);
     if let Ok(mut f) = opened {
-        let _ = write!(f, "unix time {now}, process {}\n{text}\n", std::process::id());
+        let header = HEADER.get().map_or("", String::as_str);
+        let _ = write!(f, "unix time {now}, process {}\n{header}\n{text}\n", std::process::id());
     }
 }
 

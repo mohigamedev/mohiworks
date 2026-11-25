@@ -5,6 +5,7 @@
 
 mod audit;
 mod census;
+mod identity;
 mod inspect;
 mod precompile;
 mod run;

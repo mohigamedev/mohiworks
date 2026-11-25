@@ -324,6 +324,12 @@ function Invoke-Scenario([string]$ScenarioName, $Given = $null) {
         seconds = $s.seconds; ran = $run.Ran; exited_by_itself = $run.Exited
         result = $r; passed = ($fails.Count -eq 0); failures = $fails
     }
+    # The exact builds that ran (the run's `build` event): this layer's
+    # CodeView key (its PDB in the symbol store) and the title's identity.
+    if (Test-Path $events) {
+        $build = Get-Content $events | Where-Object { $_ -match '"kind":"build"' } | Select-Object -First 1
+        if ($build) { $result.build = $build | ConvertFrom-Json }
+    }
     $result | ConvertTo-Json -Depth 6 | Out-File (Join-Path $out 'result.json') -Encoding utf8
     $verdict = 'FAIL'; if ($fails.Count -eq 0) { $verdict = 'PASS' }
     $median = 'n/a'; if ($r.WorldMedianMs) { $median = "$($r.WorldMedianMs) ms" }

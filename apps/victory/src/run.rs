@@ -31,6 +31,24 @@ pub fn run(
         "pid",
         victory_gpu::events::Value::Int(i64::from(std::process::id())),
     )]);
+    // Who runs: this layer's exact build and the title's (docs/directions.md E1, E4).
+    let (layer, title) = (crate::identity::ours(), crate::identity::Identity::of(&original));
+    let identity = crate::identity::line(&layer, &title);
+    println!("{identity}");
+    victory_loader::set_crash_header(identity);
+    {
+        use victory_gpu::events::Value;
+        victory_gpu::events::emit("build", &[
+            ("victory_key", Value::Str(&layer.key)),
+            ("victory_blake3", Value::Str(&layer.blake3)),
+            ("source", Value::Str(crate::identity::SOURCE)),
+            ("profile", Value::Str(crate::identity::PROFILE)),
+            ("title_key", Value::Str(&title.key)),
+            ("title_blake3", Value::Str(&title.blake3)),
+            ("title_timestamp", Value::Int(i64::from(title.timestamp))),
+            ("title_size", Value::Int(i64::from(title.size_of_image))),
+        ]);
+    }
     let images = cfg.cache_subdir("images")?;
     victory_hle::modules::d3d12x::use_shader_cache(cfg.cache_subdir("shaders")?);
     let image = victory_loader::load(&prepared, &images)?;
