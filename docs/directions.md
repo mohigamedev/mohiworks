@@ -450,6 +450,43 @@ Still ours to build after I1-I7 (nobody has them): D3 GPU detile, D2 class B
 tiles, D6 pacing and the 30 fps lock, D7 pool root cause, D5 symbols, the
 195 merged geometry-stage programs.
 
+### 4c. Evidence track (E-items, proposed, for review)
+
+Fixed facts these are rated against: the consoles are x86-64 (Zen 2, RDNA 2);
+crash and hang data about the title comes only from real console hardware,
+never from this layer; symbolication is exact only with matching symbols; we
+have no symbols for the title; platform formats and API semantics are NDA
+documentation, which we do not have. So everything below is about **our
+layer's** evidence, and anything we infer about the title or the console is
+labelled as inference.
+
+Already met (checked, no work): our release builds keep x64 unwind tables
+(`.pdata`) and line tables; the title and its DLLs are loaded by the Windows
+loader, which registers their unwind tables; calls from the title into the
+layer go straight to our functions (no generated frames), so stacks walk
+across the boundary; the crash walker uses unwind tables, not frame
+pointers. Frame pointers: not adopted (1-3 % cost, no gain on x64 Windows).
+
+| # | Item | Requirement | Effort | Value | Rating against the facts |
+|---|------|-------------|--------|-------|--------------------------|
+| E1 | Stamp every run and crash log with the build identity: our exe's CodeView key (GUID+age; `victory-pe` already reads it), BLAKE3, commit and dirty flag; into `crashes.log`, the run log and `result.json` | symbols | S | high | consistent (our layer only) |
+| E2 | Local symbol store for our builds (SymStore layout, keyed by E1's key) under `%LOCALAPPDATA%\victory\symbols`, filled by the harness at run start and by a ninja step; keep every key a result or crash log names, prune the rest | symbols | S-M | high | consistent |
+| E3 | `victory symbolize <crashes.log>`: dbghelp with the store; refuses unless the key matches exactly | symbols | M | medium-high | consistent; describes our layer's crashes only |
+| E4 | Title identity per run (exe BLAKE3, CodeView key, timestamp, image size, package version) beside E1; D5's name sidecar keyed by it and marked `provenance: inferred` | symbols | S (+M for D5) | high | consistent as inference; never presented as symbols |
+| E5 | Harness hang detector: no frame event for 45-60 s while CPU time and paging stay flat (slow loads and pipeline builds excluded); writes `hang-meta.json` | hang dumps | S | high | consistent (our process) |
+| E6 | On a hang, a small out-of-process dump first (threads, stacks, handles, memory map; well under 1 GB), then kill | hang dumps | S-M | high | consistent; a Windows minidump of our process, no console format assumed |
+| E7 | `victory dump <pid>`: snapshot (PssCaptureSnapshot) plus a region filter for a bounded heap-inclusive dump; full-memory dump only on request (18-24 GB) | hang dumps | M-L | high, costly | consistent |
+| E8 | Hang event from the GPU layer: last completed and signalled fence per queue, pending lists, removed reason; DRED in hang-hunting runs | hang dumps | S-M | medium | consistent |
+| E9 | Diagnostics-build lock registry (owner thread, acquire site, time) for our own mutexes | hang dumps | M | medium-high | consistent |
+| E10 | `#[inline(never)]` on the small console-API entry points, so stacks always show the boundary; merge chained (split) functions in D5's function table | unwinding | S-M | medium | consistent |
+| E11 | Reword layer-observed behaviour stated as console fact: R6 and D7 (pool exhaustion is what the title does *under this layer*), D5 (names are our dictionary's resolutions, not symbols), README (`crashes.log` is crashes under VIctory; tiling from public addrlib, console modes unverified) | NDA assumptions | S | high | required by the facts |
+| E12 | `docs/assumptions.md`: one row per NDA-dependent claim (method slots, struct and descriptor layouts, XMem flags, budgets, swizzle IDs, console float mode, BCPack, save and package formats) with its source (title's calls, public source, measured) and status (`open`, `verified-public`, `needs-platform-docs`); code tag `// unverified(nda): ... id=An`; public-source items (addrlib, AMD ISA) verified now | NDA assumptions | M | high | consistent; nothing marked verified without a source |
+| E13 | xtask lint: every tag has an index row and the reverse; warn on untagged method-slot tables | NDA assumptions | S-M | medium | consistent |
+
+Proposed order: E11, E1, E2, E5, E6, E12 (seed), E4, E3, E8, E13, E10, E9, E7.
+Out of reach from here (needs console hardware or NDA access): matching
+real console dumps to title builds; verifying the `needs-platform-docs` rows.
+
 ## 5. Open questions
 
 - Which `settings.xml` values does the title honour on this console build?
