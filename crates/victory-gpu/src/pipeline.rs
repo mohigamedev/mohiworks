@@ -61,6 +61,8 @@ pub(crate) struct Shader {
     /// The first 8 bytes of its BLAKE3, as logged.
     pub(crate) hash: String,
     container: Vec<u8>,
+    /// The full BLAKE3 of the container (what a pipeline recipe names it by).
+    full: [u8; 32],
     #[cfg(windows)]
     translated: OnceLock<Option<Translated>>,
 }
@@ -111,6 +113,7 @@ fn shader(stage: &'static str, bytes: &[u8]) -> Arc<Shader> {
                 stage,
                 hash: full.to_hex()[..16].to_owned(),
                 container: bytes.to_vec(),
+                full: *full.as_bytes(),
                 #[cfg(windows)]
                 translated: OnceLock::new(),
             })
@@ -694,6 +697,10 @@ pub(crate) mod host;
 mod library;
 #[cfg(windows)]
 mod make;
+#[cfg(windows)]
+mod recipe;
+#[cfg(windows)]
+pub use recipe::{ReplayReport, replay as replay_recipes};
 
 /// Lets the pipeline library's mapped file go from memory when no pipeline
 /// has loaded for a while (`library::trim`); called by the host's sweep.

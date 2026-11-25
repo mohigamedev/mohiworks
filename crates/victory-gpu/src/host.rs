@@ -647,6 +647,13 @@ fn adapter_line(adapter: &IDXGIAdapter3) -> String {
     }
 }
 
+/// The host adapter's vendor and device ids (pipeline recipes name them).
+pub(crate) fn adapter_ids() -> Option<(u32, u32)> {
+    // SAFETY: plain query into a local.
+    let d = unsafe { host()?.adapter.as_ref()?.GetDesc1() }.ok()?;
+    Some((d.VendorId, d.DeviceId))
+}
+
 fn log_adapter(adapter: &IDXGIAdapter3) {
     let line = adapter_line(adapter);
     crate::events::emit("adapter", &[("name", crate::events::Value::Str(&line))]);

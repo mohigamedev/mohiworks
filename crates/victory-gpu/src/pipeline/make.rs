@@ -59,6 +59,14 @@ impl Pending {
         }
     }
 
+    pub(super) fn shaders(&self) -> &[Arc<Shader>] {
+        &self.shaders
+    }
+
+    pub(super) fn key(&self) -> &str {
+        &self.key
+    }
+
     fn make(&self) {
         self.made
             .get_or_init(|| HostPipeline::new(&self.shaders, self.graphics.as_deref()));
@@ -122,6 +130,7 @@ pub(crate) fn ready(p: &Arc<Pending>) -> Option<&HostPipeline> {
     // on the next launch, even if this run never got to use it.
     if !p.used.load(Ordering::Relaxed) && !p.used.swap(true, Ordering::Relaxed) {
         super::library::note_used(&p.key);
+        super::recipe::note(p);
     }
     if p.made.get().is_none() {
         start(p, REQUESTED);
@@ -248,7 +257,12 @@ impl Queue {
     }
 
     fn pop(&mut self) -> Option<Arc<Pending>> {
-        let p = self.requested.pop_front().or_else(|| {
+        // Newest first: a draw whose pipeline is not ready is dropped and
+        // asks again at its next draw, so the newest requests are the
+        // pipelines of what is on screen now; the oldest may be of a scene
+        // that has gone. Not measured on a run yet: `host pipeline made` durations are
+        // logged at debug level to do so.
+        let p = self.requested.pop_back().or_else(|| {
             // An early entry can have been promoted and claimed already.
             std::iter::from_fn(|| self.early.pop_front())
                 .find(|p| p.queue_state.load(Ordering::Relaxed) == EARLY)
@@ -390,8 +404,9 @@ mod tests {
         assert_eq!(queue.push(&promoted, REQUESTED), Some(false));
         assert_eq!(queue.push(&promoted, REQUESTED), None);
 
-        assert!(Arc::ptr_eq(&queue.pop().unwrap(), &requested));
+        // Newest request first: `promoted` was requested after `requested`.
         assert!(Arc::ptr_eq(&queue.pop().unwrap(), &promoted));
+        assert!(Arc::ptr_eq(&queue.pop().unwrap(), &requested));
         assert_eq!(queue.push(&promoted, REQUESTED), None);
         assert!(Arc::ptr_eq(&queue.pop().unwrap(), &earlier));
         assert!(queue.pop().is_none());
