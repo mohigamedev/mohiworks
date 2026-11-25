@@ -153,6 +153,11 @@ counters for calls, pages, runs, skips and lock hold time.
   loading frames. Keep dropping rather than standing in.
 - **Unmeasured.** Make durations are not logged in release builds; add a
   log line for them first.
+- **Status.** Recipes are recorded at first use (`pipeline/recipe.rs`) and
+  replayed by `victory precompile --pipelines`; `Queue::pop` serves newest
+  first; make durations are logged at debug level. Not yet done: the
+  warm-start at boot, a priority from the draw count, and a measured
+  replay on a real recipe set.
 
 ### D. Splash flicker and cutscene smoothness
 

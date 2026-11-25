@@ -55,7 +55,7 @@ use std::sync::{Mutex, MutexGuard, OnceLock, RwLock};
 use windows::Win32::Graphics::Direct3D12::*;
 use windows::core::{HSTRING, Interface, PCWSTR};
 
-static DIR: OnceLock<PathBuf> = OnceLock::new();
+pub(super) static DIR: OnceLock<PathBuf> = OnceLock::new();
 
 /// Keeps the pipeline library and the early list in `dir` from now on.
 pub fn use_pipeline_cache(dir: PathBuf) {
@@ -255,6 +255,27 @@ thread_local! {
 /// Names the pipeline this thread makes next.
 pub(crate) fn label(text: String) {
     LABEL.with(|l| *l.borrow_mut() = text);
+}
+
+/// How the library answered a thread's last [`pipeline`] call.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Outcome {
+    /// No call since the last [`take_outcome`], or it made no pipeline.
+    None,
+    /// The pipeline was in the library.
+    Loaded,
+    /// The driver compiled it.
+    Made,
+}
+
+thread_local! {
+    static OUTCOME: std::cell::Cell<Outcome> = const { std::cell::Cell::new(Outcome::None) };
+}
+
+/// What this thread's last [`pipeline`] call came to, forgotten: how `victory
+/// precompile --pipelines` counts pipelines made and found.
+pub(crate) fn take_outcome() -> Outcome {
+    OUTCOME.with(|o| o.replace(Outcome::None))
 }
 
 /// A library call of this thread, listed in [`CALLS`] until dropped.
@@ -514,6 +535,7 @@ pub(crate) fn pipeline(
     let wide = HSTRING::from(name);
     let Some(library) = library() else {
         MADE.fetch_add(1, Ordering::Relaxed);
+        OUTCOME.with(|o| o.set(Outcome::Made));
         return create();
     };
     let began = std::time::Instant::now();
@@ -529,6 +551,7 @@ pub(crate) fn pipeline(
     let refused = match loaded {
         Ok(pso) => {
             LOADED.fetch_add(1, Ordering::Relaxed);
+            OUTCOME.with(|o| o.set(Outcome::Loaded));
             crate::host::trail(|| {
                 let label = LABEL.with(|l| l.borrow().clone());
                 format!("pipeline library: loaded {label} in {:.1} ms", began.elapsed().as_secs_f64() * 1e3)
@@ -543,6 +566,17 @@ pub(crate) fn pipeline(
         create()?
     };
     MADE.fetch_add(1, Ordering::Relaxed);
+    OUTCOME.with(|o| o.set(Outcome::Made));
+    // At debug level in every build (the trail below is kept only with
+    // the trail on): how long the driver takes per pipeline was not
+    // measurable from a release run's log, and what to cap in a replay
+    // (compute compiles) and what to start first depends on it.
+    tracing::debug!(
+        pipeline = %name,
+        shaders = %LABEL.with(|l| l.borrow().clone()),
+        millis = began.elapsed().as_secs_f64() * 1e3,
+        "host pipeline made by the driver"
+    );
     crate::host::trail(|| {
         let label = LABEL.with(|l| l.borrow().clone());
         format!(
@@ -578,7 +612,9 @@ pub(crate) fn save(now: bool) {
         tracing::warn!(error = %e, "host pipeline library not saved");
         return;
     }
-    let tmp = dir.join(LIBRARY_FILE).with_extension("tmp");
+    // The recipes of pipelines first used since the last save.
+    super::recipe::flush(dir);
+    let tmp =dir.join(LIBRARY_FILE).with_extension("tmp");
     // The bytes of the library written to `tmp`; 0 when no pipeline was
     // added: the library on disk is then what it was, and only the early
     // list is written (a title pipeline first drawn with wrote all 1,352 MB

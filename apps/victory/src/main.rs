@@ -94,6 +94,12 @@ enum Command {
         /// Worker threads (default: every logical core).
         #[arg(long)]
         jobs: Option<usize>,
+        /// After the shaders, build the host pipelines the recipes of
+        /// earlier runs name, into the pipeline library a run loads, so the
+        /// run does not wait for the driver to compile them (and drop their
+        /// draws meanwhile). Needs a run to have recorded recipes.
+        #[arg(long)]
+        pipelines: bool,
     },
     /// Prepare, map and bind a title executable; with --execute, run it.
     Run {
@@ -173,7 +179,7 @@ fn main() -> Result<()> {
             }
             translate::run(paths, validate, pipelines, list, jobs)
         }
-        Command::Precompile { paths, jobs } => precompile::run(paths, jobs),
+        Command::Precompile { paths, jobs, pipelines } => precompile::run(paths, jobs, pipelines),
         Command::Run {
             exe,
             unimplemented,

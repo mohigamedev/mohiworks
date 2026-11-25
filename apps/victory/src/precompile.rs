@@ -21,7 +21,7 @@ use anyhow::{Context, Result};
 use crate::shader::{MAX_FILE, sources};
 
 #[cfg(windows)]
-pub fn run(paths: Vec<PathBuf>, jobs: Option<usize>) -> Result<()> {
+pub fn run(paths: Vec<PathBuf>, jobs: Option<usize>, pipelines: bool) -> Result<()> {
     let cfg = victory_core::Config::load()?;
     // Without paths: the game's shader archive, not the whole folder (every
     // file read whole would be tens of GB for nothing).
@@ -126,10 +126,44 @@ pub fn run(paths: Vec<PathBuf>, jobs: Option<usize>) -> Result<()> {
     for (reason, n) in reasons.iter().take(15) {
         println!("  {n:>6}  {reason}");
     }
+    if pipelines {
+        replay_pipelines()?;
+    }
+    Ok(())
+}
+
+/// Builds the host pipelines of the recorded recipes (`pipeline-recipes.bin`
+/// in the pipeline cache folder) into the pipeline library.
+#[cfg(windows)]
+fn replay_pipelines() -> Result<()> {
+    let cores = std::thread::available_parallelism().map_or(4, |n| n.get());
+    // Leaves two cores for the machine; the driver's compiles use more
+    // threads of their own, so more than 12 workers only queue for them.
+    let workers = cores.saturating_sub(2).clamp(1, 12);
+    let report = victory_gpu::pipeline::replay_recipes(workers, 3, &|line| println!("{line}"))
+        .map_err(anyhow::Error::msg)
+        .context("replaying pipeline recipes")?;
+    println!(
+        "done           {} pipelines: {} made now, {} already in the library, {} failed, {:.0} s",
+        report.total, report.made, report.loaded, report.failed, report.seconds
+    );
+    if report.key_changed > 0 {
+        println!(
+            "note           {} rebuilt pipelines have another key than the recorded one (their library names are not a run's)",
+            report.key_changed
+        );
+    }
+    for why in &report.failures {
+        println!("  failed  {why}");
+    }
+    println!("slowest:");
+    for (secs, shaders) in &report.slowest {
+        println!("  {secs:>7.2} s  {shaders}");
+    }
     Ok(())
 }
 
 #[cfg(not(windows))]
-pub fn run(_paths: Vec<PathBuf>, _jobs: Option<usize>) -> Result<()> {
+pub fn run(_paths: Vec<PathBuf>, _jobs: Option<usize>, _pipelines: bool) -> Result<()> {
     anyhow::bail!("precompile needs Windows and a D3D12 GPU")
 }
