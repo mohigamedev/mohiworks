@@ -32,6 +32,43 @@ shader precompiled.
 | Memory | 24.4 GB peak commit on 15.4 GB of RAM. The page file is now 64-96 GB [M] |
 | Display | The splash judders: a 33.3 ms clock on a 165 Hz panel, `Present(0,0)`, and a 4K window [C][H] |
 
+### Route coverage (2026-11-25, recorded and replayed unattended)
+
+`scenarios/world-continue.json`:
+1. Boot.
+2. Start screen: A.
+3. The logo animation (now stable), then the loading art.
+4. Opening cutscene: A held 2.5 s to skip.
+5. Loading.
+6. Second cutscene: A held 3 s to skip.
+7. Prologue gameplay, which the pause menu confirms as PROLOGUE.
+
+The unattended replay passed: 2758 frames, world median 598 ms, no device
+removal.
+
+| Phase | fps | Measured |
+|-------|-----|----------|
+| Start screen, logo, loading art | 30 | stable |
+| Opening cutscene | 0.4-2 | textures up to 1.8 s/frame at its start (the texture guard is off) |
+| Gameplay load and second cutscene | 0.1-1.9 | frames up to 16 s; up to 4,896 draws dropped |
+| Prologue gameplay | 1.5-2.8 | 4,000-7,000 draws, 350-1,600 dropped, **with 0 pipelines being made** |
+| Pause menu | 3-8 | card memory 7.9 → 9.5 GB, and the budget falls 11.2 → 10.6 GB |
+| Back in gameplay after the pause menu | – | one frame: 6.4 s on the GPU and 7.6 s of copy-back, then the device was removed (recorded run) |
+
+New leads, ranked:
+- **N1. Device removal after the pause menu.** Card memory is not given
+  back, and the GPU then oversubscribes [M]. Whether that causes the
+  removal is [H].
+- **N2. Draws dropped with no pipeline being made.** These drops are not
+  the pipeline backlog. Likely candidates: untranslatable shaders (303,
+  of which 195 are ES/GS) and refused pipelines [H]. The diagnostics
+  build counts drops by reason.
+- **N3. The cost of the guard off.** Textures take 80-170 ms per gameplay
+  frame and up to 1.8 s on cutscene loads [M]. A correct replacement
+  (D2 class B) gets the speed back.
+- **N4. Dark interiors in gameplay:** the missing ray-traced light
+  (fork README).
+
 ## 2. Root causes
 
 ### R1. The CPU and GPU never overlap
@@ -387,3 +424,9 @@ This becomes a D0 scenario (world-soak with pool counters).
 | 2026-11-25 | Stay with Rust and PowerShell (no C++ rewrite); build the test harness (D0) first |
 | 2026-11-25 | Root causes R1-R7 and directions D0-D7 approved. Start with the harness, then extend it with switches that control the title's rigid limits (resolution, frame lock, settings) |
 | 2026-11-25 | Graphics presets and snapshots stay outside the repo (they name or contain the title's own data) |
+| 2026-11-25 | Texture write guard off by default: correct frames over speed (R5b) |
+| 2026-11-25 | D4 implemented: pipeline recipes recorded at first use; `precompile --pipelines` replays them; the harness prepare step runs it |
+| 2026-11-25 | Next, screen by screen along the recorded route: N1 (removal after the pause menu), N2 (drop reasons), then N3 and the 4K output |
+| 2026-11-25 | Lower render resolution through the console model, not by shrinking the title's targets. As a Series S (`--console series-s`, the same package: `MicrosoftGame.Config` targets Anaconda and Lockhart) the title presents 1920×1080 instead of 3840×2160 by its own choice. `VICTORY_DISPLAY_MODE` alone does not change its output. Series S route (`scenarios/world-continue-s.json`): PASS, world median 318 ms against 655-742 ms, gameplay steady at 3.8-4.3 fps against 1.5-2.8, peak commit 21 GB against 22-24, GPU 35-50 ms of a 240 ms frame. The rest is CPU preparation (R2). Series S becomes the default test target on 16 GB machines |
+| 2026-11-25 | Textures are not "4K only": one package serves Series X and S, and textures stream by mip level with per-category LOD scales (`texLodScale_*`). The 4K cost was the render resolution |
+| 2026-11-25 | Pipeline replay checked: run 2's prepare replayed 2,103 recorded recipes (2,092 already in the library, 4 made, 7 failed); 0 pipelines were being made in gameplay. The remaining drops (about 300-550 a frame) are not the pipeline backlog (N2) |
