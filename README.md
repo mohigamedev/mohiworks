@@ -12,7 +12,7 @@ publisher or by Microsoft.
 
 ## Status (2026-11-25)
 
-**Not playable yet: about 4 frames per second in the world.** Tested on one
+**Not playable yet: about 5 frames per second in the world.** Tested on one
 machine: Windows 11, AMD Radeon RX 6800M 12 GB, 16 GB RAM (paging file
 enlarged), as a Series S.
 
@@ -20,15 +20,33 @@ enlarged), as a Series S.
 |-------|-------|
 | Boot, splash, start screen | works, 30 fps; the start screen is passed by scripted input at 11 s |
 | Opening cutscenes | play; skipped by holding A |
-| Prologue gameplay | renders at 3.8-4.4 fps as a Series S (1080p), 1.5-2.8 as a Series X (4K) |
+| Prologue gameplay | renders at 4.1-5.7 fps as a Series S (1080p), 1.5-2.8 as a Series X (4K) |
 | Pause menu | works, 22-25 fps; card memory stays flat across it |
-| Stability | the recorded route passes unattended: no crash, no device loss |
+| Stability | the recorded route (400 s) and a 12-minute soak pass unattended: no crash, no device loss |
 | Draws dropped in gameplay | about 280 a frame: 255 are the ray-tracing structure builder (off on purpose), the rest shaders that do not translate yet |
 
-Where a gameplay frame's time goes (Series S, about 240 ms): the GPU needs
-35-50 ms; the rest is VIctory keeping copies of title memory in sync on the
-CPU. Removing that (title memory used in place, textures detiled on the GPU)
-is the main direction; see [docs/directions.md](docs/directions.md).
+Where a gameplay frame's time goes (Series S, about 210 ms): the GPU needs
+about 32 ms; the rest is VIctory keeping copies of title memory in sync on
+the CPU. Removing that (title memory used in place, textures detiled on the
+GPU) is the main direction; see [docs/directions.md](docs/directions.md).
+
+### Measured runs (2026-11-25)
+
+Unattended harness runs (`scripts/harness.ps1`) on the machine above, Series S,
+low preset. "World median" is the median frame time once the title is in the
+open world. Each run's log and result stay on the test machine (they hold the
+title's own output); the numbers are copied here.
+
+| Run | Build | Length | Result | World median | Notes |
+|-----|-------|--------|--------|--------------|-------|
+| route | before in-place memory | 400 s | pass | 244 ms (4.1 fps) | CPU prep 192 ms, GPU 41 ms, copy-back 103 ms |
+| route | title memory in place (default since `cac0620`) | 400 s | pass | 211-216 ms (4.6-4.7 fps) | CPU prep 163 ms, GPU 32 ms, copy-back 91 ms |
+| route | + physical pages in place (`VICTORY_INPLACE_POOL=1`, off by default) | 400 s | pass | 183-205 ms (4.9-5.5 fps) | CPU prep 138-151 ms |
+| soak | + physical pages in place, capped at 512 MB | 720 s | pass | 194 ms (5.2 fps) | no crash, no device loss; shared GPU memory peak 6.9 of 7.2 GB |
+| soak | + physical pages in place, uncapped | 720 s | fail at 127 s | - | the card's shared memory ran out; the cap above fixes it |
+
+Every pass had no crash and no device loss. Draws dropped in gameplay: about
+280 a frame in every run (see the table above).
 
 ## What this repository adds
 
