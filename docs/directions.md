@@ -448,6 +448,26 @@ title yet) adds ideas, not code:
 | I9 | Its measured RDNA2 behaviour as a hardware-oracle test set: apply console-exact float rules only to the operations where they were measured to differ (reciprocal, square root, log, exp, legacy multiply), never to every max/min | exactness without the 4x GPU cost we measured | shader tests; `gpu_ms` |
 | I10 | Its notes on the console's structure-builder format and a compute builder (reference for the 255 builder drops, after I2) | missing indirect light | drops with the builder on (`world-rt`) |
 
+A fifth tree, an AMD-focused VIctory branch (GPL-3.0; upstream as of an
+older point plus 481 commits; README: 3-5 fps in the world on an RX 9070 XT
+with 64 GB, the same band as ours on a much stronger machine) is the only
+one that attacks our CPU sync cost directly. A merge conflicts in 42 files
+(464 hunks) and rebasing onto it leaves us 311 commits behind upstream, so
+we pick from it, messages unchanged, each pick swept for the title's name:
+
+| # | Step | Attacks | Measured by |
+|---|------|---------|-------------|
+| B1 | Title memory in place: the host GPU reads a buffer straight from the title's committed memory (a placed heap over it) instead of a copy; copies only where memory is not committed or spans allocations. Compare with upstream's memory batch (I2) first and take one design | copies (~60 ms) and copy-back (~90 ms) | `copies_ms`, `back_ms` |
+| B2 | Write-guard series: guard epochs with a constant-time fast path, parallel copy-back, a cache of unmapped holes, fault-free safe copies, every view of a physical page guarded | the rest of copy-back; parts left behind | `back_ms`; route screenshots |
+| B3 | Descriptor and clamp items: hoisted clamps for indirect draws (they quote 225 to 80 ms GPU in a 9,000-draw scene), twice the dynamic descriptor slots, a capped walk for free slots | GPU time, dropped draws | `gpu_ms`, drops |
+| B4 | AMD driver workarounds: raw views for 16-byte structured buffers, element counts without the size query that crashes AMD's compiler, pipelines that crash or hang the compiler dropped instead of the run | crashes and wrong reads on AMD | harness PASS rate |
+| B5 | Translator extras behind opt-in switches: per-lane descriptors through control flow, descriptors read as data, SGPR spills and hardware SGPR inputs, the first half of an interpolation, f64 ops; and the ray-tracing builder series (unproven there too: the host GPU still faulted with rays on) | our 301 refusals; later the 255 builder drops | `audit` failure reasons; `world-rt` |
+
+Not taken without a decision: its constant ambient light standing in for
+the missing indirect light, and depth twins on by default (picture changes,
+not speed). Its helper-pixel quad reads are always on there; we keep
+discard helpers opt-in (they cost 4x GPU time here).
+
 It has nothing for our CPU sync cost: it keeps its own memory arena and
 copies explicitly, and detiles on the CPU too.
 
