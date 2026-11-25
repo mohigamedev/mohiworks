@@ -400,6 +400,43 @@ This becomes a D0 scenario (world-soak with pool counters).
 | 8 | D3 GPU detile, then D2 class B tiles | Removes E5, E3 and E6 fully | textures ms |
 | 9 | D6 presentation | Independent; can slot in anywhere | flicker gone; frame-time variance |
 
+### 4b. Inherited work (2026-11-25 review, proposed order, for review)
+
+Three related repositories were compared with ours (all GPL-3.0-or-later):
+
+- **ztrx**: our shared base plus a README, a launcher and the same de-naming;
+  no code we lack. Its lead is testing: the prologue played to the boat chase
+  on an RTX 3050 at 1-3 fps, 1 h 30 min without a crash.
+- **fxceless/victory-fork** (ztrx's base): 5 commits beyond our base.
+- **Upstream VIctory** (Marvisak): 319 commits beyond our base, mostly from
+  2026-11-24/25. A full merge conflicts in 45 files (about 360 hunks: the
+  fork and upstream rewrote the same memory layer) and brings the title's
+  name back into about 30 files. Cherry-pick by theme instead; every picked
+  hunk is checked for the name and commit trailers before it is committed.
+
+What upstream and the fork have that we lack, ranked by our bottleneck
+(about 190 ms of a 240 ms Series S frame is CPU sync: copy-back ~90, copies
+~60, textures ~58; 255 of ~280 drops a frame are the structure builder):
+
+| # | Step | Source | Attacks | Measured by |
+|---|------|--------|---------|-------------|
+| I1 | Translator batch: small independent instruction and accuracy commits (v_sad, v_mul_hi24, cvt_off, tbuffer d16, quadmask, interp_p2_f16, readfirstlane, op_sel, f64 converts, phi compression, BDD cap) | upstream; fork 3bff182 | the ~30 untranslated compute shaders; low conflict risk | `precompile` failure reasons; drops a frame |
+| I2 | Memory theme as one unit on a branch: page journal per 64 KiB page, one page table per view heap per submission, shader write marks (copy back only pages shaders wrote), raw-address page table | upstream c75fdba, 86a5ed6, bacb06a, 6d021fe, 27c3dc9, cd94d35, 940d32f | copy-back (~90 ms) and part of copies; makes the structure builder safe to run (255 drops) | `back_ms`, `copies_ms`; drops with `VICTORY_BVH_BUILDER=1` by default |
+| I3 | Depth bounds test reaches the host; adjacent textures stop taking each other out of the upload queue | fork c96b4f2 (depth bounds part), 310c6eb | a known wrong-output case; texture churn | the depth-bounds log line gone; `textures_ms` |
+| I4 | One host texture per texture memory; writable depth twins | upstream 13bbd6f | duplicate texture copies | `textures_ms`; logo flicker re-checked |
+| I5 | Pipelines from the shader pack, beside our recipes | upstream 9c58a1c | pipelines not yet drawn (new areas) | `making` stays 0 past the prologue |
+| I6 | Diagnostics (peek/poke, DRED breadcrumbs, GPU timing) and stability, audio, HLE fixes | upstream | tooling, crashes | harness PASS rate |
+| I7 | Texture re-check after upload (skin and hair colour) | fork a803c87 | visible error; costs uploads | `textures_ms` with and without `VICTORY_HEAP_RECHECK=0` |
+
+Kept as ours (no equivalent there): the 16-bit wave sum for partial waves,
+the harness and milestone input, Series S as the test target, pipeline
+recipes. Skipped: fork 8dd30ab (the same page-alias index as ours, built
+differently), fork 31714de unless our view-heap probe misses its case.
+
+Still ours to build after I1-I7 (nobody has them): D3 GPU detile, D2 class B
+tiles, D6 pacing and the 30 fps lock, D7 pool root cause, D5 symbols, the
+195 merged geometry-stage programs.
+
 ## 5. Open questions
 
 - Which `settings.xml` values does the title honour on this console build?
