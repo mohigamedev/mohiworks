@@ -539,6 +539,24 @@ tiles, D6 pacing and the 30 fps lock, D7 pool root cause, D5 symbols, the
   removed the device before; into a file-mapping heap is untested: WARP and
   card probe first.
 
+#### Pool sections in place (2026-11-25, `VICTORY_INPLACE_POOL=1`, off by default)
+
+- Opening a section makes all of it resident, so the pool is not one 4 GB
+  section: physical pages live in committed 64 MiB sections, and a section
+  is opened as a heap only when a window that is one run of it is used in
+  place (`VICTORY_INPLACE_MB` caps the bytes open). A section the host
+  cannot commit falls back to reserved and to copies.
+- The heap does not stand on the views: the title remaps as before, and
+  what is placed there is let go on remap like any in-place memory.
+- Route, two runs against in-place alone (211/216 ms): world median 199/205
+  ms, CPU prep 144/151 (163), copies 57/60 MB (70), copy-back 24 MB (31);
+  ~490 MB of sections open; no removals, peak commit unchanged.
+- DirectStorage writes into physical pages fail now and then (1-14 a run,
+  with and without this switch since early runs): the warning now says
+  whether a page was unknown or its view failed, and with which error.
+- Next: scattered and holed windows (2.3 GB) through a reserved resource
+  whose tiles map onto section heaps; then on by default after a soak.
+
 ### 4c. Evidence track (E-items, proposed, for review)
 
 Fixed facts these are rated against: the consoles are x86-64 (Zen 2, RDNA 2);
