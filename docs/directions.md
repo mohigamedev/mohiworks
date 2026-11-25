@@ -428,6 +428,19 @@ What upstream and the fork have that we lack, ranked by our bottleneck
 | I6 | Diagnostics (peek/poke, DRED breadcrumbs, GPU timing) and stability, audio, HLE fixes | upstream | tooling, crashes | harness PASS rate |
 | I7 | Texture re-check after upload (skin and hair colour) | fork a803c87 | visible error; costs uploads | `textures_ms` with and without `VICTORY_HEAP_RECHECK=0` |
 
+A fourth project (GPL-3.0, read locally as a reference; it runs the same
+title's code in-process like ours, but on Vulkan, and does not boot the
+title yet) adds ideas, not code:
+
+| # | Step | Attacks | Measured by |
+|---|------|---------|-------------|
+| I8 | Descriptors looked up by content at run time: the shader hands the descriptor's bits to a hash table of every descriptor the bound heaps hold (bindless arrays), instead of the translator proving which descriptor it reads | the 81 shaders refused for descriptors chosen by control flow or read as data | `audit` failure reasons |
+| I9 | Its measured RDNA2 behaviour as a hardware-oracle test set: apply console-exact float rules only to the operations where they were measured to differ (reciprocal, square root, log, exp, legacy multiply), never to every max/min | exactness without the 4x GPU cost we measured | shader tests; `gpu_ms` |
+| I10 | Its notes on the console's structure-builder format and a compute builder (reference for the 255 builder drops, after I2) | missing indirect light | drops with the builder on (`world-rt`) |
+
+It has nothing for our CPU sync cost: it keeps its own memory arena and
+copies explicitly, and detiles on the CPU too.
+
 Kept as ours (no equivalent there): the 16-bit wave sum for partial waves,
 the harness and milestone input, Series S as the test target, pipeline
 recipes. Skipped: fork 8dd30ab (the same page-alias index as ours, built
