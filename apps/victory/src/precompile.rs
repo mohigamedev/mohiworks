@@ -93,7 +93,7 @@ pub fn run(paths: Vec<PathBuf>, jobs: Option<usize>) -> Result<()> {
                         Err(e) => failed.lock().unwrap().push(e),
                     }
                     let n = done.fetch_add(1, Ordering::Relaxed) + 1;
-                    if n % 1000 == 0 || n == total {
+                    if n.is_multiple_of(1000) || n == total {
                         println!(
                             "  {n}/{total} ({} translated now, {} failed) {:.0} s",
                             fresh.load(Ordering::Relaxed),
@@ -122,7 +122,7 @@ pub fn run(paths: Vec<PathBuf>, jobs: Option<usize>) -> Result<()> {
         *reasons.entry(reason.chars().take(120).collect()).or_default() += 1;
     }
     let mut reasons: Vec<_> = reasons.into_iter().collect();
-    reasons.sort_by(|a, b| b.1.cmp(&a.1));
+    reasons.sort_by_key(|r| std::cmp::Reverse(r.1));
     for (reason, n) in reasons.iter().take(15) {
         println!("  {n:>6}  {reason}");
     }
