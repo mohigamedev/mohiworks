@@ -572,6 +572,26 @@ pub fn structure_wide(program: &Program, wide: &HashSet<usize>) -> Result<Struct
     structure_as(program, true, wide)
 }
 
+#[cfg(test)]
+thread_local! {
+    /// A test's choice for [`discard_helpers_on`], for its thread only.
+    pub(crate) static TEST_DISCARD_HELPERS: std::cell::Cell<Option<bool>> = const { std::cell::Cell::new(None) };
+}
+
+/// `VICTORY_DISCARD_HELPERS=1`: a pixel's discarded lanes run on as helpers to the end
+/// ([`Structured::discards`]), right for derivatives taken after the discard. Off by
+/// default: discarded lanes leave the live mask ([`killing`]), as before, so an
+/// alpha-clipped pixel stops working where it is discarded. With helpers always on a
+/// gameplay frame took about four times the GPU time (2026-11-25, Series S route).
+pub fn discard_helpers_on() -> bool {
+    #[cfg(test)]
+    if let Some(on) = TEST_DISCARD_HELPERS.get() {
+        return on;
+    }
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| std::env::var_os("VICTORY_DISCARD_HELPERS").is_some_and(|v| v == "1"))
+}
+
 /// The per-lane form with a pixel's discarded lanes taken out of the live
 /// mask, as the console does: wrong for derivatives after a discard, but
 /// what a program needs whose discarded lanes would read values no
@@ -587,7 +607,7 @@ fn structure_as(
 ) -> Result<Structured, ShaderError> {
     let mut l = Lanes::new(program)?;
     l.wide = wide.clone();
-    if !helpers {
+    if !helpers || !discard_helpers_on() {
         l.kills.clear();
     }
     loop {

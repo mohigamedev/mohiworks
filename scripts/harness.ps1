@@ -63,7 +63,9 @@ param(
     [switch]$NoPrepare,
     # Run the diagnostics build (ninja diag: target\diag\victory.exe), which
     # logs why draws are dropped, per reason, beside the frame lines.
-    [switch]$Diag
+    [switch]$Diag,
+    # Run another build of victory.exe (a control run with an older build).
+    [string]$Victory = ''
 )
 
 $ErrorActionPreference = 'Stop'
@@ -71,6 +73,7 @@ $ErrorActionPreference = 'Stop'
 
 $paths = Get-VictoryPaths
 if ($Diag) { $paths.Victory = Join-Path $script:RepoRoot 'target\diag\victory.exe' }
+if ($Victory) { $paths.Victory = (Resolve-Path $Victory).Path }
 $scenarioDir = Join-Path $script:RepoRoot 'scenarios'
 foreach ($d in 'presets', 'snapshots', 'backup', 'results') {
     New-Item -ItemType Directory -Force (Join-Path $paths.Harness $d) | Out-Null
