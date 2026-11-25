@@ -1,16 +1,16 @@
 {
-    "description":  "Boot to gameplay (the prologue), recorded 2026-11-25 by driving the title through the control channel: A at the start screen, then A held to skip the opening cutscenes. Ends 2.5 minutes into gameplay.",
-    "seconds":  450,
-    "preset":  "low",
-    "keys":  "26.2:Enter,121.7:Enter:604,157.9:Enter:2503,267.7:Enter:3008",
-    "env":  {
-                "VICTORY_PROFILE":  "low",
-                "VICTORY_RELAY":  "2",
-                "VICTORY_PIPELINE_WAIT_MS":  "24"
-            },
-    "pass":  {
-                 "reach_world":  true,
-                 "max_crashes":  0,
-                 "max_removals":  0
-             }
+  "description": "Boot to gameplay (the prologue) as a Series S (1080p). A is pressed every 2 s from 3 s until the title opens the world's first pack (milestone core_restofworld001: the start screen was accepted); the cutscene skips (A held) count from that milestone. Recorded 2026-11-25 on the control channel.",
+  "seconds": 400,
+  "preset": "low",
+  "keys": "3..core_restofworld001/2:Enter,94.8@core_restofworld001:Enter:604,131@core_restofworld001:Enter:2503,240.8@core_restofworld001:Enter:3008",
+  "env": {
+    "VICTORY_PROFILE": "low",
+    "VICTORY_RELAY": "2",
+    "VICTORY_PIPELINE_WAIT_MS": "24"
+  },
+  "pass": {
+    "reach_world": true,
+    "max_crashes": 0,
+    "max_removals": 0
+  }
 }

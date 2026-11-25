@@ -1,9 +1,16 @@
 {
-  "description": "As world-continue, for 10 minutes: pool exhaustion, device loss, memory growth.",
-  "seconds": 600,
-  "snapshot": "world",
+  "description": "As world-continue, for 12 minutes: pool exhaustion, device loss, memory growth.",
+  "seconds": 720,
   "preset": "low",
-  "keys": "40:Enter,46:Enter,52:Enter,58:Enter,64:Enter,70:Enter,76:Enter",
-  "env": { "VICTORY_PROFILE": "low", "VICTORY_PIPELINE_WAIT_MS": "24", "VICTORY_RELAY": "2" },
-  "pass": { "reach_world": true, "max_crashes": 0, "max_removals": 0 }
+  "keys": "3..core_restofworld001/2:Enter,94.8@core_restofworld001:Enter:604,131@core_restofworld001:Enter:2503,240.8@core_restofworld001:Enter:3008",
+  "env": {
+    "VICTORY_PROFILE": "low",
+    "VICTORY_RELAY": "2",
+    "VICTORY_PIPELINE_WAIT_MS": "24"
+  },
+  "pass": {
+    "reach_world": true,
+    "max_crashes": 0,
+    "max_removals": 0
+  }
 }

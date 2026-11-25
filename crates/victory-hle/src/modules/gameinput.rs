@@ -1068,6 +1068,91 @@ pub(crate) fn module() -> HleModule {
 }
 
 /// Host input: XInput pads, the keyboard while our process has focus.
+/// The virtual key of a `VICTORY_KEYS` key name.
+fn key_vk(name: &str) -> Option<u8> {
+    Some(match name.trim() {
+        "Enter" => 0x0D,
+        "Esc" => 0x1B,
+        "Tab" => 0x09,
+        "Back" => 0x08,
+        "Up" => 0x26,
+        "Down" => 0x28,
+        "Left" => 0x25,
+        "Right" => 0x27,
+        k if k.len() == 1 && k.as_bytes()[0].is_ascii_alphanumeric() => k.as_bytes()[0].to_ascii_uppercase(),
+        _ => return None,
+    })
+}
+
+/// When a scripted key (`VICTORY_KEYS` entry) is down.
+#[derive(Debug, Clone, PartialEq)]
+enum KeyTiming {
+    /// `<seconds>:<key>`: that long after input starts.
+    At(Duration),
+    /// `<seconds>@<milestone>:<key>`: that long after the milestone (see
+    /// [`crate::milestone`]); never if it is not reached.
+    After(String, Duration),
+    /// `<from>..<milestone>/<every>:<key>`: pressed every `every` seconds
+    /// from `from` until the milestone is reached (a start screen that
+    /// waits for A is passed as soon as it shows; splash screens that take
+    /// A are skipped).
+    Until { from: Duration, every: Duration, milestone: String },
+}
+
+#[derive(Debug, Clone, PartialEq)]
+struct ScriptedKey {
+    timing: KeyTiming,
+    vk: u8,
+    held: Duration,
+}
+
+/// `VICTORY_KEYS`: comma-separated `<when>:<key>[:<held ms>]` (held 200 ms
+/// unless given: a cutscene is skipped by holding A for seconds), `<when>`
+/// one of the [`KeyTiming`] forms. Entries that do not parse are left out.
+fn parse_script(list: &str) -> Vec<ScriptedKey> {
+    let secs = |text: &str| Duration::try_from_secs_f64(text.trim().parse().ok()?).ok();
+    list.split(',')
+        .filter_map(|entry| {
+            let mut parts = entry.split(':');
+            let when = parts.next()?.trim();
+            let timing = if let Some((range, every)) = when.split_once('/') {
+                let (from, milestone) = range.split_once("..")?;
+                let every = secs(every)?;
+                if every.is_zero() {
+                    return None;
+                }
+                KeyTiming::Until { from: secs(from)?, every, milestone: milestone.trim().to_ascii_lowercase() }
+            } else if let Some((after, milestone)) = when.split_once('@') {
+                KeyTiming::After(milestone.trim().to_ascii_lowercase(), secs(after)?)
+            } else {
+                KeyTiming::At(secs(when)?)
+            };
+            let vk = key_vk(parts.next()?)?;
+            let held = parts.next().and_then(|ms| ms.trim().parse().ok()).unwrap_or(200u64).clamp(20, 60_000);
+            Some(ScriptedKey { timing, vk, held: Duration::from_millis(held) })
+        })
+        .collect()
+}
+
+impl ScriptedKey {
+    /// Down at `now` (since input started), given when each milestone was
+    /// reached on the same clock.
+    fn down(&self, now: Duration, reached: &dyn Fn(&str) -> Option<Duration>) -> bool {
+        match &self.timing {
+            KeyTiming::At(at) => (*at..*at + self.held).contains(&now),
+            KeyTiming::After(milestone, after) => reached(milestone).is_some_and(|base| {
+                let at = base + *after;
+                (at..at + self.held).contains(&now)
+            }),
+            KeyTiming::Until { from, every, milestone } => {
+                now >= *from
+                    && reached(milestone).is_none()
+                    && Duration::from_nanos(((now - *from).as_nanos() % every.as_nanos()) as u64) < self.held
+            }
+        }
+    }
+}
+
 #[cfg(windows)]
 mod host {
     use std::time::{Duration, Instant};
@@ -1201,9 +1286,8 @@ mod host {
     }
 
     /// Scripted input, in any build (the test harness, `scripts/harness.ps1`,
-    /// drives the title past its menus with it): `VICTORY_KEYS=<seconds>:<key>,...`
-    /// holds each key for 0.2 s that long after input starts, with or
-    /// without focus. A key is a letter, a digit, or `Enter`, `Esc`, `Tab`,
+    /// drives the title past its menus with it): `VICTORY_KEYS=<when>:<key>,...`
+    /// (see [`parse_script`]) holds each key, with or without focus. A key is a letter, a digit, or `Enter`, `Esc`, `Tab`,
     /// `Back`, `Up`, `Down`, `Left`, `Right` (the stand-in pad's table maps
     /// them to buttons). Unset: nothing is pressed.
     /// When input started: the clock `VICTORY_KEYS` counts from, and the one
@@ -1269,43 +1353,17 @@ mod host {
         }
     }
 
-    /// The virtual key of a `VICTORY_KEYS` key name.
-    fn key_vk(name: &str) -> Option<u8> {
-        Some(match name.trim() {
-            "Enter" => 0x0D,
-            "Esc" => 0x1B,
-            "Tab" => 0x09,
-            "Back" => 0x08,
-            "Up" => 0x26,
-            "Down" => 0x28,
-            "Left" => 0x25,
-            "Right" => 0x27,
-            k if k.len() == 1 && k.as_bytes()[0].is_ascii_alphanumeric() => k.as_bytes()[0].to_ascii_uppercase(),
-            _ => return None,
-        })
-    }
-
     /// Keys pressed by script (`VICTORY_KEYS`) or live (`VICTORY_CONTROL`).
     fn scripted() -> Vec<u8> {
-        // `<seconds>:<key>[:<held ms>]` (held 200 ms unless given: a
-        // cutscene is skipped by holding A for seconds).
-        static SCRIPT: LazyLock<(Instant, Vec<(Duration, u8, Duration)>)> = LazyLock::new(|| {
-            let list = std::env::var("VICTORY_KEYS").unwrap_or_default();
-            let keys = list.split(',').filter_map(|entry| {
-                let mut parts = entry.split(':');
-                let at = Duration::try_from_secs_f64(parts.next()?.trim().parse().ok()?).ok()?;
-                let vk = key_vk(parts.next()?)?;
-                let held = parts.next().and_then(|ms| ms.trim().parse().ok()).unwrap_or(200u64).clamp(20, 60_000);
-                Some((at, vk, Duration::from_millis(held)))
-            });
-            (*INPUT_START, keys.collect())
-        });
-        let (start, keys) = &*SCRIPT;
+        static SCRIPT: LazyLock<Vec<ScriptedKey>> =
+            LazyLock::new(|| parse_script(&std::env::var("VICTORY_KEYS").unwrap_or_default()));
+        let start = *INPUT_START;
         let now = start.elapsed();
-        let mut down: Vec<u8> = keys
+        let since_start = |name: &str| crate::milestone::reached(name).map(|at| at.saturating_duration_since(start));
+        let mut down: Vec<u8> = SCRIPT
             .iter()
-            .filter(|&&(at, _, held)| (at..at + held).contains(&now))
-            .map(|&(_, vk, _)| vk)
+            .filter(|key| key.down(now, &since_start))
+            .map(|key| key.vk)
             .collect();
         for vk in controlled() {
             if !down.contains(&vk) {
@@ -1440,6 +1498,30 @@ mod tests {
     use crate::HostPolicy;
     use victory_loader::Provenance;
     use victory_pe::ImportSymbol;
+
+    #[test]
+    fn scripted_keys_wait_for_milestones() {
+        let s = |x: f64| Duration::from_secs_f64(x);
+        let keys = parse_script("26.2:Enter, 3..Core_World/2:Enter:300 ,94.9@core_world:Enter:604,bad,1:Nope");
+        assert_eq!(keys.len(), 3);
+        assert_eq!(keys[0].timing, KeyTiming::At(s(26.2)));
+        assert_eq!(keys[1].timing, KeyTiming::Until { from: s(3.0), every: s(2.0), milestone: "core_world".into() });
+        assert_eq!(keys[2].timing, KeyTiming::After("core_world".into(), s(94.9)));
+        assert_eq!(keys[2].held, Duration::from_millis(604));
+
+        let none = |_: &str| None;
+        let at_27 = |_: &str| Some(s(27.0));
+        // Repeats every 2 s from 3 s, held 300 ms, until the milestone.
+        assert!(!keys[1].down(s(2.9), &none));
+        assert!(keys[1].down(s(3.1), &none));
+        assert!(!keys[1].down(s(3.4), &none));
+        assert!(keys[1].down(s(25.2), &none));
+        assert!(!keys[1].down(s(25.2), &at_27));
+        // After the milestone: 94.9 s past it, for 604 ms.
+        assert!(!keys[2].down(s(121.0), &none));
+        assert!(keys[2].down(s(122.0), &at_27));
+        assert!(!keys[2].down(s(122.6), &at_27));
+    }
 
     #[derive(Default)]
     struct FakeHost {

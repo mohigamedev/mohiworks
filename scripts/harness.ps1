@@ -5,10 +5,14 @@
 .DESCRIPTION
   A scenario (scenarios/<name>.json in the repo) names:
     seconds     how long to run
-    console     series-x | series-s (default series-x)
+    console     series-s | series-x (default series-s: 1080p, the one a
+                16 GB machine runs at a usable rate; series-x renders 4K)
     snapshot    a saved data folder to start from (optional)
     preset      a graphics preset to write into the title's settings (optional)
-    keys        scripted input, VICTORY_KEYS form: "20:Enter,26:Enter" (optional)
+    keys        scripted input, VICTORY_KEYS form (optional): "<s>:Enter" at a time,
+                "<s>@<milestone>:Enter" after a milestone, "<from>..<milestone>/<every>:Enter"
+                repeated until one; ":<ms>" after the key holds it. Milestones are the
+                stems of files the title opens (crates/victory-hle/src/milestone.rs)
     env         VICTORY_* switches, an object of NAME: value (optional)
     pass        thresholds: min_frames, reach_world, max_world_median_ms,
                 max_peak_commit_mb, max_removals (default 0), max_crashes (default 0)
@@ -146,7 +150,7 @@ function Invoke-Scenario([string]$ScenarioName, $Given = $null) {
     if (-not (Test-Path $paths.Victory)) { throw "no $($paths.Victory): build it first (ninja)" }
     if (-not $paths.Game) { throw 'no game_dir in victory.toml' }
     $exe = Join-Path $paths.Game 'game_scarlett_master.exe'
-    $console = 'series-x'; if ($s.console) { $console = $s.console }
+    $console = 'series-s'; if ($s.console) { $console = $s.console }
 
     $stamp = Get-Date -Format 'yyyyMMdd-HHmmss'
     $out = Join-Path $paths.Harness "results\$stamp-$ScenarioName"
