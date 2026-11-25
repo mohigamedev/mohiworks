@@ -1996,8 +1996,9 @@ impl<'a> Lower<'a> {
         if !every {
             if halves {
                 need(self.cur_ir);
+                return Err(WHERE);
             }
-            return Err(WHERE);
+            return Ok(self.half_sum_partial(x));
         }
         let c = self.cur;
         let i32t = self.s.t.i32;
@@ -2023,6 +2024,60 @@ impl<'a> Lower<'a> {
         let total = self.s.m.bin(c, Bin::And, total, low);
         let first = self.s.m.bin(c, Bin::And, lo, high);
         Ok(self.s.m.bin(c, Bin::Or, first, total))
+    }
+
+    /// [`Self::half_sum`] on one host wave of 64 lanes where not every lane runs. The
+    /// console's tree takes +0 for the lanes outside the mask, and after each step every
+    /// lane of a subtree holds the same partial sum (f16 addition commutes), so each step
+    /// reads the partner subtree's sum from any lane of it that runs (the lowest, by the
+    /// wave's ballot), or adds +0 where none of it runs: the same additions in the same
+    /// order as the console's, without reading a lane that does not run.
+    /// shortcut: the high half is the first running lane's, not lane 0's (which may not
+    /// run here; no `v_add_f16` writes it).
+    fn half_sum_partial(&mut self, x: V) -> V {
+        let c = self.cur;
+        let i32t = self.s.t.i32;
+        self.s.flags |= flags::WAVE_OPS;
+        let four = self.s.m.named_struct("dx.types.fouri32", vec![i32t; 4]);
+        let yes = self.s.m.bool(true);
+        let ballot = self.s.op(c, "waveActiveBallot", Attr::NoUnwind, four, 116, &[yes]);
+        let (lo_mask, hi_mask) = (self.s.m.extract(c, ballot, 0), self.s.m.extract(c, ballot, 1));
+        let lane = self.s.op(c, "waveGetLaneIndex", Attr::ReadOnly, i32t, 111, &[]);
+        let (zero, k31, k32) = (self.s.m.i32(0), self.s.m.i32(31), self.s.m.i32(32));
+        let mut sum = x;
+        for step in 0..6u32 {
+            // the partner subtree: the 2^step lanes from `base`
+            let size = 1u32 << step;
+            let base = {
+                let up = self.s.m.i32(!(size - 1));
+                let mine = self.s.m.bin(c, Bin::And, lane, up);
+                let bit = self.s.m.i32(size);
+                self.s.m.bin(c, Bin::Xor, mine, bit)
+            };
+            let upper = self.s.m.cmp(c, pred::IUGE, base, k32);
+            let word = self.s.m.select(c, upper, hi_mask, lo_mask);
+            let shift = self.s.m.bin(c, Bin::And, base, k31);
+            let word = self.s.m.bin(c, Bin::LShr, word, shift);
+            let running = if size == 32 {
+                word
+            } else {
+                let keep = self.s.m.i32(((1u64 << size) - 1) as u32);
+                self.s.m.bin(c, Bin::And, word, keep)
+            };
+            let any = self.s.m.cmp(c, pred::NE, running, zero);
+            // FirstbitLo (dx.op 32); with no lane running, any lane that runs (the read is not used)
+            let first = self.s.op(c, "unaryBits.i32", Attr::ReadNone, i32t, 32, &[running]);
+            let at = self.s.m.bin(c, Bin::Add, base, first);
+            let at = self.s.m.select(c, any, at, lane);
+            let theirs = self.read_lane(sum, at);
+            let theirs = self.s.m.select(c, any, theirs, zero);
+            sum = self.add_halves(sum, theirs);
+        }
+        let (high, low) = (self.s.m.i32(0xFFFF_0000), self.s.m.i32(0xFFFF));
+        let first = self.s.op(c, "waveReadLaneFirst.i32", Attr::NoUnwind, i32t, 118, &[x]);
+        let first = self.s.m.bin(c, Bin::And, first, high);
+        let sum = self.s.m.bin(c, Bin::And, sum, low);
+        self.s.m.bin(c, Bin::Or, first, sum)
     }
 
     fn run(mut self) -> Result<Lowered, Stop> {

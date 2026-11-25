@@ -199,6 +199,120 @@ fn a_sum_of_halves_over_the_wave_is_the_consoles_tree_bit_for_bit() {
     eprintln!("ran on the hardware device: the sum {:#x} of the console's tree", tree[0]);
 }
 
+/// The wave sum of 16-bit floats inside `if (t < s0)`, on a host of 64-lane waves: the lanes
+/// that do not run are not read, and count +0 as on the console, whose tree it still is.
+#[test]
+fn a_sum_of_halves_where_not_every_lane_runs_is_the_consoles_tree() {
+    // thread t holds 0x3C00 + 37 t (as above); the threads below s0 sum it over the wave
+    let mut words = vec![
+        0x340C_0085, // v_lshlrev_b32 v6, 5, v0
+        0x340E_0082, // v_lshlrev_b32 v7, 2, v0
+        0x4A0E_0F06, // v_add_nc_u32 v7, v6, v7
+        0x4A0E_0F00, // v_add_nc_u32 v7, v0, v7
+        0x4A0E_0EFF,
+        0x0000_3C00, // v_add_nc_u32 v7, 0x3c00, v7
+        0x7D88_0000, // v_cmp_gt_u32 vcc, s0, v0
+        0xBE8C_246A, // s_and_saveexec_b64 s[12:13], vcc
+        0xBF88_0000 | 23, // s_cbranch_execz past the body
+    ];
+    let body: Vec<u32> = super::wave::WAVE_OR_V7_TO_S7
+        .iter()
+        .map(|&w| if w >> 25 == 28 { w & 0x01FF_FFFF | 50 << 25 } else { w })
+        .collect();
+    words.extend(&body);
+    words.extend_from_slice(&[
+        0x7E00_0207, // v_mov_b32 v0, s7
+        0x38 << 26 | 0x1C << 18,
+        0x80 << 24 | 2 << 16, // buffer_store_dword v0, off, s[8:11], 0
+        0xBEFE_040C, // s_mov_b64 exec, s[12:13]
+    ]);
+    assert_eq!(body.len() + 3, 23, "the branch lands on the restore of EXEC");
+    let native = native(&words);
+    let p = ir::build(&native.code, native.wave64, native.vgprs).expect("ir::build");
+    let st = structure::structure(&p).expect("structure");
+    let res = resource::track(&p, &native.layout, native.stage, Some(&st)).expect("resource::track");
+    let io = io::raise(&p, &native).expect("io::raise");
+    let was = lower::TEST_HOST_WAVE.replace(Some(64));
+    let lowered = lower::lower(&lower::Parts {
+        native: &native,
+        p: &p,
+        st: &st,
+        io: &io,
+        res: &res,
+        inputs: Vec::new(),
+        outputs: Vec::new(),
+        prims: Vec::new(),
+        mesh_stride: 0,
+    });
+    lower::TEST_HOST_WAVE.set(was);
+    let lowered = lowered.expect("lower: a partial wave's 16-bit sum translates");
+    let shader = HostShader {
+        stage: HwStage::Cs,
+        dxil: lowered.dxil,
+        user_data: lowered.user_data,
+        samplers: lowered.samplers,
+        static_samplers: Vec::new(),
+        root_cbvs: lowered.root_cbvs,
+        root_srvs: lowered.root_srvs,
+        root_uavs: lowered.root_uavs,
+        root_indexed_views: res.root_indexed_views,
+    };
+    if let Ok(mut v) = validator::Validator::load(validator::Validator::default_path().as_deref()) {
+        let mut copy = shader.dxil.clone();
+        v.validate(&mut copy).expect("DXIL validation failed");
+    }
+    let wide = |h: u16| {
+        if h == 0 {
+            0.0
+        } else {
+            f32::from_bits((u32::from(h >> 10) + 112) << 23 | u32::from(h & 0x3FF) << 13)
+        }
+    };
+    let narrow = |f: f32| {
+        let b = f.to_bits();
+        let h = ((b >> 23) - 112) << 10 | (b >> 13 & 0x3FF);
+        let rest = b & 0x1FFF;
+        (h + u32::from(rest > 0x1000 || rest == 0x1000 && h & 1 == 1)) as u16
+    };
+    let add = |a: u16, b: u16| if b == 0 { a } else if a == 0 { b } else { narrow(wide(a) + wide(b)) };
+    let _one = super::valu_tests::ONE_AT_A_TIME.lock().unwrap_or_else(|e| e.into_inner());
+    let Ok(host) = Host::new(false) else {
+        eprintln!("no SM 6.6 hardware device; not run");
+        return;
+    };
+    let (root, pso) = match host.compute_pipeline(&shader) {
+        Ok(x) => x,
+        Err(e) => {
+            eprintln!("the hardware device does not take this program (waves of 64?): {e}; not run");
+            return;
+        }
+    };
+    for running in [1u32, 13, 40, 63] {
+        let terms: Vec<u16> = (0..64u16).map(|t| if u32::from(t) < running { 0x3C00 + 37 * t } else { 0 }).collect();
+        let mut tree = terms.clone();
+        while tree.len() > 1 {
+            tree = tree.chunks(2).map(|c| add(c[0], c[1])).collect();
+        }
+        let mut ud = vec![0u32; shader.user_data_dwords().max(1) as usize];
+        ud[0] = running;
+        let out = host
+            .dispatch(
+                &root,
+                &pso,
+                &Dispatch {
+                    roots: vec![(0, Root::Constants(ud))],
+                    views: &[View::RawUav(1)],
+                    samplers: &[],
+                    groups: [1, 1, 1],
+                },
+            )
+            .unwrap_or_else(|e| panic!("dispatch failed: {e}"));
+        // (the high half is the first running lane's term's: zero)
+        assert_eq!(out[0][0], u32::from(tree[0]), "{running} lanes running: tree {:#x}", tree[0]);
+    }
+    eprintln!("ran on the hardware device: partial waves sum as the console's tree");
+}
+
 /// One `v_add_f16` whose exact result lies between two halves: 1 + 3/1024 (0x3C03) plus 2
 /// (0x4000) is 3 + 1.5 steps of that range, which the console rounds up to 0x4202. The
 /// host's `f32tof16` may give 0x4201 (toward zero); with `VICTORY_F16_NEAREST=1` the

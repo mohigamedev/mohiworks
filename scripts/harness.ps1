@@ -51,13 +51,17 @@ param(
     # record: also save the data folder as this snapshot when the title closes.
     [string]$SnapshotAs = '',
     # Skip the prepare step (shader cache brought up to date before a run).
-    [switch]$NoPrepare
+    [switch]$NoPrepare,
+    # Run the diagnostics build (ninja diag: target\diag\victory.exe), which
+    # logs why draws are dropped, per reason, beside the frame lines.
+    [switch]$Diag
 )
 
 $ErrorActionPreference = 'Stop'
 . "$PSScriptRoot\lib\victory-run.ps1"
 
 $paths = Get-VictoryPaths
+if ($Diag) { $paths.Victory = Join-Path $script:RepoRoot 'target\diag\victory.exe' }
 $scenarioDir = Join-Path $script:RepoRoot 'scenarios'
 foreach ($d in 'presets', 'snapshots', 'backup', 'results') {
     New-Item -ItemType Directory -Force (Join-Path $paths.Harness $d) | Out-Null
