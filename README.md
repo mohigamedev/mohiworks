@@ -175,6 +175,17 @@ victory shader-info [paths...] [--verbose] [--disasm]
 victory translate [paths...] [--validate] [--pipelines] [--list] [--jobs N]
 victory precompile [paths...] [--jobs N]   # fill the run's shader cache ahead
                                            # (default: the game's shaders.rpf)
+```
+
+Test harness (Windows PowerShell; see `docs/directions.md`, D0): repeatable
+scenarios from `scenarios/*.json`, with graphics presets, data snapshots
+and scripted input kept in `%LOCALAPPDATA%\victory\harness`:
+
+```powershell
+.\scripts\harness.ps1 list
+.\scripts\harness.ps1 snapshot world       # after saving in the world
+.\scripts\harness.ps1 run world-continue   # or: ninja scenarios
+.\scripts\smoke.ps1 -Seconds 300 -Env 'VICTORY_PROFILE=low'   # quick one-off
 victory run <exe> [--execute] [--unimplemented trap|zero] [--strict]
             [--console series-x|series-s] [-- <title arguments>]
 victory config
@@ -196,7 +207,7 @@ cargo build --profile diag -p victory --features diagnostics   # target\diag\vic
 | `VICTORY_LOG=<target>=debug,...` | debug and trace output |
 | `VICTORY_STACKS=20,60` | every thread's stack at those seconds |
 | `VICTORY_WATCH=<rva>,...` | logs a title u32 when it changes |
-| `VICTORY_KEYS=30:Enter,35:X` | presses keys at those seconds, focus or not |
+| `VICTORY_KEYS=30:Enter,35:X` | (any build) presses keys at those seconds, focus or not; the harness (`scripts/harness.ps1`) uses it to get past menus |
 | `VICTORY_CRASH_SAVE=<rva>:<len>,...` | saves title memory to the cache folder on a crash |
 | `VICTORY_CAPTURE=<dir>` | saves presented frames (powers of two, or `VICTORY_CAPTURE_FRAMES=<list>`) |
 | `VICTORY_DUMP_TARGETS=1` | with the two above, saves every render target of those frames |
@@ -209,6 +220,7 @@ cargo build --profile diag -p victory --features diagnostics   # target\diag\vic
 | `VICTORY_D3D12_WARP=1` | host device on the software adapter (slow; cannot reset the driver) |
 | `VICTORY_SHADER_LOOP_LIMIT=<n>` | (any build) translated shader loops stop after `n` iterations per lane and per loop entry, in every stage, instead of the per-stage caps (pixel 128, vertex and mesh 256, compute 4,096); own shader cache entries. If a lower `n` makes world frames much faster, loops hitting the limit are what makes them slow |
 | `VICTORY_PROFILE=low` | (any build) trade correctness of effects for frames: every translated loop stops after 64 iterations unless `VICTORY_SHADER_LOOP_LIMIT` says otherwise. Precompile with the same setting |
+| `VICTORY_DISPLAY_MODE=WxH` | (any build) the display mode reported to the title (default 3840x2160). Grand Theft Auto VI still presents 3840x2160 with a smaller mode (2026-11-25): its output size comes from elsewhere |
 | `VICTORY_AUDIO_CAPTURE=<file.wav>` | records what the title plays (our process only) |
 | `VICTORY_XMA_DUMP=<dir>` | saves the first 32 XMA voices' context and input |
 

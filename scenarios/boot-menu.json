@@ -1,0 +1,5 @@
+{
+  "description": "Boot to the menus with no input; catches startup regressions.",
+  "seconds": 90,
+  "pass": { "min_frames": 1500, "max_crashes": 0, "max_removals": 0 }
+}

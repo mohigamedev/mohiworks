@@ -1,0 +1,9 @@
+{
+  "description": "As world-continue, for 10 minutes: pool exhaustion, device loss, memory growth.",
+  "seconds": 600,
+  "snapshot": "world",
+  "preset": "low",
+  "keys": "40:Enter,46:Enter,52:Enter,58:Enter,64:Enter,70:Enter,76:Enter",
+  "env": { "VICTORY_PROFILE": "low", "VICTORY_PIPELINE_WAIT_MS": "24", "VICTORY_RELAY": "2" },
+  "pass": { "reach_world": true, "max_crashes": 0, "max_removals": 0 }
+}

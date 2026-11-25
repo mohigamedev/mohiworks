@@ -159,6 +159,36 @@ Each scenario is a small file:
   keeps the paging counters (`\Memory\Pages Input/sec`, per-process page
   faults; no admin needed) sampled beside the run.
 
+**Status (2026-11-25): stage 1 built.**
+- **Code.** `scripts/harness.ps1` with `list`, `snapshot <name>`,
+  `run <scenario>`, `run-all` and `restore`; `ninja scenarios` runs them
+  all. `scripts/lib/victory-run.ps1` is shared with `smoke.ps1`.
+- **Data.** Scenarios live in `scenarios/*.json`. Presets, snapshots,
+  backups and results live in `%LOCALAPPDATA%\victory\harness`, never in
+  the repo, because the presets name the title's own settings.
+- **Scripted keys.** `VICTORY_KEYS` now works in release builds.
+- **Checked end to end.** The low preset wrote its 8 settings, and the
+  user's own settings came back byte for byte afterwards. Paging counters
+  were sampled (median 3,500 hard-faulted pages/s at boot), and the
+  result was written as JSON.
+- **To do:** a `world` snapshot from the user's save, and the key timings
+  of the menu flow.
+
+**Stage 2: control switches.** These are the title's rigid limits: 4K
+output, the 30/60 fps lock, its own settings. Each becomes a harness
+switch, found and made to work one by one:
+- **Output resolution.** `VICTORY_DISPLAY_MODE=WxH` already exists: the
+  layer reports that display mode to the title, and the log confirms it.
+  But the title still presents 3840×2160 [M]. Its back-buffer size comes
+  from elsewhere (console model, or its own resolution setting [H]).
+  Finding the source is the first stage-2 task.
+- **Frame-rate limit:** the title's 30 fps setting and its frame
+  interval (`SetFrameIntervalX`).
+- **Graphics settings** the title honours: test each preset value
+  against the frame statistics.
+- **Skipping intros** through an engine-level hook, once D5 names the
+  code.
+
 Initial scenarios:
 1. **boot-menu:** 90 s. Catches startup regressions.
 2. **world-continue:** from a snapshot, 120 s in the world. Measures
@@ -305,3 +335,5 @@ This becomes a D0 scenario (world-soak with pool counters).
 | 2026-11-24 | Precompile all shader translations; the cache is keyed by translator source, not by the executable |
 | 2026-11-25 | Direction: virtualize instead of simulate; root causes before fixes; this document sets the order |
 | 2026-11-25 | Stay with Rust and PowerShell (no C++ rewrite); build the test harness (D0) first |
+| 2026-11-25 | Root causes R1-R7 and directions D0-D7 approved. Start with the harness, then extend it with switches that control the title's rigid limits (resolution, frame lock, settings) |
+| 2026-11-25 | Graphics presets and snapshots stay outside the repo (they name or contain the title's own data) |

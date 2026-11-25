@@ -6,11 +6,15 @@
   Starts `victory run <exe> --execute` with the given switches, stops it
   after -Seconds (or when it exits), then reads the log and prints a
   `victory-smoke v1` block: commit, switches, frames, frame time once the
-  world is reached, dropped draws, peak commit, device removals, crashes.
+  world is reached, dropped draws, peak commit, device removals, crashes,
+  and hard page faults (sampled beside the run).
+
+  For repeatable scenarios (snapshots, graphics presets, scripted input,
+  thresholds) use scripts/harness.ps1; this is the quick one-off.
 
   Compare a change against main with the same -Seconds, -Env and input.
-  The rule of thumb this follows (from XCL): at least 80 % of main's frames,
-  at most 125 % of its peak commit, and no device removal.
+  The rule of thumb (from XCL): at least 80 % of main's frames, at most
+  125 % of its peak commit, and no device removal.
 
   Works on Windows PowerShell 5.1.
 
@@ -21,7 +25,7 @@ param(
     [int]$Seconds = 300,
     # The title's executable; default: game_scarlett_master.exe in game_dir of victory.toml.
     [string]$Exe = '',
-    [string]$Victory = "$PSScriptRoot\..\target\release\victory.exe",
+    [string]$Victory = '',
     # Switches for the run, 'NAME=value;NAME=value'.
     [string]$Env = '',
     [ValidateSet('series-x', 'series-s')]
@@ -30,86 +34,62 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
-$root = Resolve-Path "$PSScriptRoot\.."
+. "$PSScriptRoot\lib\victory-run.ps1"
+$paths = Get-VictoryPaths
 
-if (-not $Exe) {
-    $toml = Join-Path $root 'victory.toml'
-    if (-not (Test-Path $toml)) { throw 'no -Exe and no victory.toml' }
-    $line = Select-String -Path $toml -Pattern "^\s*game_dir\s*=\s*'([^']+)'" | Select-Object -First 1
-    if (-not $line) { throw 'no game_dir in victory.toml' }
-    $Exe = Join-Path $line.Matches[0].Groups[1].Value 'game_scarlett_master.exe'
-}
-if (-not $Log) { $Log = Join-Path $root ("smoke-{0}.log" -f (Get-Date -Format 'yyyyMMdd-HHmmss')) }
-if (-not [IO.Path]::IsPathRooted($Log)) { $Log = Join-Path (Get-Location) $Log }
+if (-not $Victory) { $Victory = $paths.Victory }
 $Victory = (Resolve-Path $Victory).Path
+if (-not $Exe) {
+    if (-not $paths.Game) { throw 'no -Exe and no game_dir in victory.toml' }
+    $Exe = Join-Path $paths.Game 'game_scarlett_master.exe'
+}
 if (-not (Test-Path $Exe)) { throw "no title executable at $Exe" }
+if (-not $Log) { $Log = Join-Path $script:RepoRoot ("smoke-{0}.log" -f (Get-Date -Format 'yyyyMMdd-HHmmss')) }
+if (-not [IO.Path]::IsPathRooted($Log)) { $Log = Join-Path (Get-Location) $Log }
+$csv = [IO.Path]::ChangeExtension($Log, '.paging.csv')
+$stop = [IO.Path]::ChangeExtension($Log, '.stop')
+Remove-Item $stop -ErrorAction SilentlyContinue
 
-# The switches go into this process's environment, which the run inherits.
-$switches = @()
+$switches = @{}
 foreach ($pair in ($Env -split ';' | Where-Object { $_ -match '=' })) {
     $name, $value = $pair -split '=', 2
-    [Environment]::SetEnvironmentVariable($name.Trim(), $value.Trim(), 'Process')
-    $switches += "$($name.Trim())=$($value.Trim())"
+    $switches[$name.Trim()] = $value.Trim()
 }
 
-$commit = (git -C $root rev-parse --short HEAD) 2>$null
-$dirty = if ((git -C $root status --porcelain --untracked-files=no) 2>$null) { ' (uncommitted changes)' } else { '' }
+$commit = (git -C $script:RepoRoot rev-parse --short HEAD) 2>$null
+$dirty = if ((git -C $script:RepoRoot status --porcelain --untracked-files=no) 2>$null) { ' (uncommitted changes)' } else { '' }
 
-$started = Get-Date
-$cmdline = "`"$Victory`" run `"$Exe`" --execute --console $Console > `"$Log`" 2>&1"
-# cmd /c strips the outer quotes of a line with several quoted parts: one
-# more pair around the whole line keeps the inner ones.
-$proc = Start-Process -FilePath cmd.exe -ArgumentList '/c', "`"$cmdline`"" -PassThru -WindowStyle Hidden
-$exited = $proc.WaitForExit($Seconds * 1000)
-if (-not $exited) {
-    Get-Process victory -ErrorAction SilentlyContinue | Stop-Process -Force
-    $proc.WaitForExit(10000) | Out-Null
+$job = Start-PagingCounters -Csv $csv -StopFile $stop
+try {
+    $run = Invoke-VictoryRun -Victory $Victory -Exe $Exe -Log $Log -Seconds $Seconds -Env $switches -Console $Console
 }
-$ran = [int]((Get-Date) - $started).TotalSeconds
+finally {
+    New-Item -ItemType File $stop -Force | Out-Null
+    Wait-Job $job -Timeout 10 | Out-Null
+    Remove-Job $job -Force
+    Remove-Item $stop -ErrorAction SilentlyContinue
+}
+$r = Read-VictoryLog -Log $Log -Csv $csv
 
-# Read the log without its colour codes.
-$text = (Get-Content $Log -Raw -ErrorAction SilentlyContinue) -replace "$([char]27)\[[0-9;]*m", ''
-if (-not $text) { $text = '' }
-$lines = $text -split "`r?`n"
+$na = { param($v, $unit) if ($null -eq $v) { 'n/a' } else { "$v$unit" } }
+$hard = 'n/a'
+if ($r.HardFaults) { $hard = "median $($r.HardFaults.Median)/s, max $($r.HardFaults.Max)/s pages read from disk" }
+$sw = ($switches.GetEnumerator() | Sort-Object Name | ForEach-Object { "$($_.Name)=$($_.Value)" }) -join ' '
+if (-not $sw) { $sw = '(none)' }
+$ranText = 'stopped'; if ($run.Exited) { $ranText = 'exited by itself' }
 
-$frames = @()
-foreach ($l in $lines) {
-    if ($l -match '([\d.]+) fps, ([\d.]+) ms/frame .*?, ([\d.]+) draws/frame, dropped ([\d.]+) without') {
-        $frames += [pscustomobject]@{
-            Fps = [double]$Matches[1]; Ms = [double]$Matches[2]
-            Draws = [double]$Matches[3]; Dropped = [double]$Matches[4]
-        }
-    }
-}
-# The world: frame lines with more than 300 draws (menus have under 50).
-$world = @($frames | Where-Object { $_.Draws -gt 300 })
-function Median($values) {
-    $s = @($values | Sort-Object)
-    if ($s.Count -eq 0) { return 'n/a' }
-    return [math]::Round($s[[int]($s.Count / 2)], 1)
-}
-# Frames shown: fps x the 5 s each frame line covers, summed.
-$shown = [int](($frames | Measure-Object -Property Fps -Sum).Sum * 5)
-$peak = 0
-foreach ($l in $lines) {
-    if ($l -match 'memory: \d+ MB committed \(peak (\d+) MB\)') { $peak = [math]::Max($peak, [int]$Matches[1]) }
-}
-$removed = @($lines | Where-Object { $_ -match 'device removed' }).Count
-$crashes = @($lines | Where-Object { $_ -match 'unhandled exception' }).Count
-$adapter = ($lines | Where-Object { $_ -match 'host adapter' } | Select-Object -First 1) -replace '.*adapter=', ''
-
-$block = @"
+Write-Output @"
 ``````victory-smoke v1
 commit       $commit$dirty
-adapter      $adapter
-switches     $(if ($switches) { $switches -join ' ' } else { '(none)' }) --console $Console
-ran          $ran s of $Seconds s ($(if ($exited) { 'exited by itself' } else { 'stopped' }))
-frames       $shown shown; $($frames.Count) frame lines, $($world.Count) in the world
-world        median $(Median ($world | ForEach-Object { $_.Ms })) ms/frame, median $(Median ($world | ForEach-Object { $_.Fps })) fps, median $(Median ($world | ForEach-Object { $_.Dropped })) draws dropped/frame
-peak commit  $peak MB
-removals     $removed device removal line(s)
-crashes      $crashes unhandled exception line(s)
+adapter      $($r.Adapter)
+switches     $sw --console $Console
+ran          $($run.Ran) s of $Seconds s ($ranText)
+frames       $($r.FramesShown) shown; $($r.FrameLines) frame lines, $($r.WorldLines) in the world
+world        median $(& $na $r.WorldMedianMs ' ms')/frame, median $(& $na $r.WorldMedianFps ' fps'), median $(& $na $r.WorldDropped '') draws dropped/frame, $(& $na $r.WorldMaking '') pipelines being made
+peak commit  $($r.PeakCommitMB) MB
+paging       $hard
+removals     $($r.Removals) device removal line(s)
+crashes      $($r.Crashes) unhandled exception line(s)
 log          $Log
 ``````
 "@
-Write-Output $block
