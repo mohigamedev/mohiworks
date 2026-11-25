@@ -1,14 +1,88 @@
-# victory-gta6
+# mohiworks
+
+Runs the Xbox Series build of the title natively on Windows PCs, built on
+[VIctory](https://github.com/Marvisak/VIctory). This repository carries
+VIctory's full history and adds work aimed at running the title at a usable
+rate on an ordinary 16 GB machine, plus a test harness that drives the title
+unattended from boot to gameplay.
+
+**This repository contains no game files, code or assets.** You need your own
+copy of the title. It is not affiliated with or endorsed by the title's
+publisher or by Microsoft.
+
+## Status (2026-11-25)
+
+**Not playable yet: about 4 frames per second in the world.** Tested on one
+machine: Windows 11, AMD Radeon RX 6800M 12 GB, 16 GB RAM (paging file
+enlarged), as a Series S.
+
+| Stage | State |
+|-------|-------|
+| Boot, splash, start screen | works, 30 fps; the start screen is passed by scripted input at 11 s |
+| Opening cutscenes | play; skipped by holding A |
+| Prologue gameplay | renders at 3.8-4.4 fps as a Series S (1080p), 1.5-2.8 as a Series X (4K) |
+| Pause menu | works, 22-25 fps; card memory stays flat across it |
+| Stability | the recorded route passes unattended: no crash, no device loss |
+| Draws dropped in gameplay | about 280 a frame: 255 are the ray-tracing structure builder (off on purpose), the rest shaders that do not translate yet |
+
+Where a gameplay frame's time goes (Series S, about 240 ms): the GPU needs
+35-50 ms; the rest is VIctory keeping copies of title memory in sync on the
+CPU. Removing that (title memory used in place, textures detiled on the GPU)
+is the main direction; see [docs/directions.md](docs/directions.md).
+
+## What this repository adds
+
+- **Build without Visual Studio:** Ninja, the xwin libraries and rust-lld.
+- **Shader and pipeline prebuild:** `victory precompile` translates every
+  shader the title ships into the run's cache; `--pipelines` replays the host
+  pipelines earlier runs recorded, so gameplay starts with none left to make.
+- **Lower output resolution:** run as a Series S (`--console series-s`): the
+  title renders 1080p by its own choice, about twice the frame rate of 4K.
+- **Test harness** (`scripts/harness.ps1`, PowerShell): scenarios with graphics
+  presets, scripted input that waits for milestones (files the title opens),
+  per-run events (frames, memory, input), pass thresholds, and a diagnostics
+  mode that logs why draws are dropped. An Electron control app
+  (`tools/control`) runs, records and follows runs live.
+- **Translator:** 16-bit float wave sums where not every lane runs, bit for
+  bit as the console's tree; checked on the host GPU.
+- **Correct frames over speed:** the texture write guard (which showed stale
+  splash frames) is off by default.
+
+## Playing
+
+```powershell
+copy victory.example.toml victory.toml     # set game_dir to your own copy
+cargo build --release -p victory
+.\scripts\play.ps1                          # Series S; -Console series-x for 4K
+```
+
+`play.ps1` brings the caches up to date, then runs the title with its own
+saves folder (`%LOCALAPPDATA%\victory\play`) and no scripted input. The
+first run translates about 26,000 shaders (a few minutes).
+
+## Credits
+
+- **[VIctory](https://github.com/Marvisak/VIctory)** by Marvisak and its
+  contributors is the base of everything here: the loader, the runtime
+  services, the Direct3D 12 back end and the shader recompiler. Licensed
+  GPL-3.0-or-later; so is this repository. Its history is kept intact.
+- **[XCL](https://github.com/ivall/xcl)** (GPL-2.0-only) was used as a
+  reference only; nothing was copied from it.
+
+Everything below this line is the earlier fork's README and, under it, upstream VIctory's own; their status sections describe those, not this repository.
+
+---
+
+## Earlier fork
 
 A work-in-progress fork of [VIctory](https://github.com/Marvisak/VIctory), the
-compatibility layer that runs the Xbox Series build of Grand Theft Auto VI
+compatibility layer that runs the Xbox Series build of the title
 natively on Windows from files the user supplies. This fork follows upstream
 `main` and adds fixes aimed at one goal: getting the game's world to render
 correctly and playably on one particular PC.
 
 **This repository contains no game files, code or assets.** You need your own
-copy of the game. It is not affiliated with or endorsed by Rockstar Games or
-Take-Two Interactive.
+copy of the game. It is not affiliated with or endorsed by the title's publisher.
 
 ## Credits
 
@@ -20,7 +94,6 @@ Take-Two Interactive.
 - **[XCL](https://github.com/ivall/xcl)** by ivall and its contributors
   (GPL-2.0-only) was used as a reference for how the same title behaves under
   another layer. Fixes inspired by it were written anew in VIctory's code.
-- This fork's changes were developed with [Claude Code](https://claude.com/claude-code).
 
 ## Status of this fork (2026-11-25)
 
@@ -73,14 +146,10 @@ Each is described in a comment where it is read.
 - A few style lints are switched off for this fork in the workspace `Cargo.toml` until the newer code is tidied.
 - Many changes here are specific to this title and this GPU, and some are marked `shortcut:` in the code where they approximate what the console does.
 
-Everything below this line is upstream VIctory's own README, unchanged; its
-status section describes upstream, not this fork.
-
----
 
 # VIctory
 
-Runs Grand Theft Auto VI (Xbox Series X|S) natively on Windows, from files
+Runs the title (Xbox Series X|S) natively on Windows, from files
 the user supplies.
 
 The title's x86-64 code runs unchanged inside our process; VIctory supplies
@@ -225,7 +294,7 @@ cargo build --profile diag -p victory --features diagnostics   # target\diag\vic
 | `VICTORY_SHADER_LOOP_LIMIT=<n>` | (any build) translated shader loops stop after `n` iterations per lane and per loop entry, in every stage, instead of the per-stage caps (pixel 128, vertex and mesh 256, compute 4,096); own shader cache entries. If a lower `n` makes world frames much faster, loops hitting the limit are what makes them slow |
 | `VICTORY_PROFILE=low` | (any build) trade correctness of effects for frames: every translated loop stops after 64 iterations unless `VICTORY_SHADER_LOOP_LIMIT` says otherwise. Precompile with the same setting |
 | `VICTORY_EVENTS=<file>` | (any build) one JSON line per event: start, adapter, display mode, input (key and pad presses on the `VICTORY_KEYS` clock), frame statistics, memory, device removal. The harness sets it for every run |
-| `VICTORY_DISPLAY_MODE=WxH` | (any build) the display mode reported to the title (default 3840x2160). Grand Theft Auto VI still presents 3840x2160 with a smaller mode (2026-11-25): its output size comes from elsewhere |
+| `VICTORY_DISPLAY_MODE=WxH` | (any build) the display mode reported to the title (default 3840x2160). The title still presents 3840x2160 with a smaller mode (2026-11-25): its output size comes from elsewhere |
 | `VICTORY_AUDIO_CAPTURE=<file.wav>` | records what the title plays (our process only) |
 | `VICTORY_XMA_DUMP=<dir>` | saves the first 32 XMA voices' context and input |
 
