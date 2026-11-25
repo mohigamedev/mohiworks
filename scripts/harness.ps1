@@ -34,10 +34,18 @@
   .\scripts\harness.ps1 run-all
 #>
 param(
-    [Parameter(Position = 0)][ValidateSet('list', 'run', 'run-all', 'snapshot', 'restore')]
+    [Parameter(Position = 0)][ValidateSet('list', 'run', 'run-all', 'snapshot', 'restore', 'record')]
     [string]$Command = 'list',
     [Parameter(Position = 1)][string]$Name = '',
-    [switch]$Keep
+    [switch]$Keep,
+    # record: start from this snapshot / preset, with these switches
+    # ('NAME=value;NAME=value'), for at most this long.
+    [string]$Snapshot = '',
+    [string]$Preset = '',
+    [string]$Env = '',
+    [int]$Seconds = 1800,
+    # record: also save the data folder as this snapshot when the title closes.
+    [string]$SnapshotAs = ''
 )
 
 $ErrorActionPreference = 'Stop'
@@ -99,10 +107,13 @@ function Test-Pass($r, $pass) {
     return , $fails
 }
 
-function Invoke-Scenario([string]$ScenarioName) {
-    $file = Join-Path $scenarioDir "$ScenarioName.json"
-    if (-not (Test-Path $file)) { throw "no scenario $file" }
-    $s = Get-Content $file -Raw | ConvertFrom-Json
+function Invoke-Scenario([string]$ScenarioName, $Given = $null) {
+    $s = $Given
+    if (-not $s) {
+        $file = Join-Path $scenarioDir "$ScenarioName.json"
+        if (-not (Test-Path $file)) { throw "no scenario $file" }
+        $s = Get-Content $file -Raw | ConvertFrom-Json
+    }
     if (-not (Test-Path $paths.Victory)) { throw "no $($paths.Victory): build it first (ninja)" }
     if (-not $paths.Game) { throw 'no game_dir in victory.toml' }
     $exe = Join-Path $paths.Game 'game_scarlett_master.exe'
@@ -127,6 +138,8 @@ function Invoke-Scenario([string]$ScenarioName) {
         if ($s.preset) { Set-Preset $title $s.preset }
         if ($s.env) { foreach ($p in $s.env.PSObject.Properties) { $envs[$p.Name] = [string]$p.Value } }
         if ($s.keys) { $envs['VICTORY_KEYS'] = $s.keys }
+        $events = Join-Path $out 'events.jsonl'
+        $envs['VICTORY_EVENTS'] = $events
 
         $log = Join-Path $out 'run.log'
         $csv = Join-Path $out 'paging.csv'
@@ -142,6 +155,10 @@ function Invoke-Scenario([string]$ScenarioName) {
         }
     }
     finally {
+        if ($SnapshotAs) {
+            Copy-Folder $title (Join-Path $paths.Harness "snapshots\$SnapshotAs")
+            Write-Host "snapshot       '$SnapshotAs' saved from the run's end state"
+        }
         if (-not $Keep) {
             Copy-Folder $backup $title
         }
@@ -163,10 +180,51 @@ function Invoke-Scenario([string]$ScenarioName) {
     Write-Host ("{0,-4} {1}: {2} frames, world {3} (dropped {4}), peak commit {5} MB, removals {6}, crashes {7}" -f `
         $verdict, $ScenarioName, $r.FramesShown, $median, $r.WorldDropped, $r.PeakCommitMB, $r.Removals, $r.Crashes)
     foreach ($f in $fails) { Write-Host "       - $f" }
+    $script:LastResult = $out
     return ($fails.Count -eq 0)
 }
 
+# The scripted-keys form (VICTORY_KEYS) of the presses recorded in an
+# events file: every replayable key or pad press, at its input-clock time.
+# Held keys (movement) replay as one 0.2 s press: tune those by hand.
+function ConvertTo-Keys([string]$Events) {
+    $keys = @()
+    foreach ($line in Get-Content $Events) {
+        $e = $line | ConvertFrom-Json
+        if ($e.kind -ne 'input' -or -not $e.down -or $e.name -like 'vk*') { continue }
+        $keys += ('{0}:{1}' -f [math]::Round([double]$e.it, 1).ToString([Globalization.CultureInfo]::InvariantCulture), $e.name)
+    }
+    return ($keys -join ',')
+}
+
 switch ($Command) {
+    'record' {
+        if (-not $Name) { throw 'record needs a scenario name' }
+        $envs = [ordered]@{}
+        foreach ($pair in ($Env -split ';' | Where-Object { $_ -match '=' })) {
+            $k, $v = $pair -split '=', 2
+            $envs[$k.Trim()] = $v.Trim()
+        }
+        $s = [pscustomobject]@{ seconds = $Seconds; snapshot = $Snapshot; preset = $Preset; env = [pscustomobject]$envs; pass = $null }
+        Write-Host "recording      play, then close the title (at most $Seconds s)"
+        Invoke-Scenario $Name $s | Out-Null
+        $events = Join-Path $script:LastResult 'events.jsonl'
+        $r = Get-Content (Join-Path $script:LastResult 'result.json') -Raw | ConvertFrom-Json
+        $keys = ''
+        if (Test-Path $events) { $keys = ConvertTo-Keys $events }
+        $scenario = [ordered]@{
+            description = "Recorded $(Get-Date -Format 'yyyy-MM-dd HH:mm') with scripts/harness.ps1 record."
+            seconds     = [math]::Max(60, [int]$r.ran)
+        }
+        if ($Snapshot) { $scenario.snapshot = $Snapshot }
+        if ($Preset) { $scenario.preset = $Preset }
+        if ($keys) { $scenario.keys = $keys }
+        if ($envs.Count) { $scenario.env = $envs }
+        $scenario.pass = [ordered]@{ reach_world = [bool]$r.result.ReachedWorld; max_crashes = 0; max_removals = 0 }
+        $file = Join-Path $scenarioDir "$Name.json"
+        $scenario | ConvertTo-Json -Depth 4 | Out-File $file -Encoding ascii
+        Write-Host "scenario       $file ($(@($keys -split ',' | Where-Object { $_ }).Count) presses)"
+    }
     'list' {
         Write-Host 'scenarios:'
         Get-ChildItem $scenarioDir -Filter *.json | ForEach-Object {

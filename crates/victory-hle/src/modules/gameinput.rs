@@ -1146,6 +1146,9 @@ mod host {
             self.empty_until[slot] = None;
             #[allow(unused_mut)]
             let mut pad = convert(&state.Gamepad);
+            if slot == 0 {
+                record_pad(pad.buttons);
+            }
             // The scripted keys (`VICTORY_KEYS`) also press the first
             // pad's buttons, by the stand-in pad's table: with a real pad
             // connected the stand-in is not there, and a title that listens
@@ -1170,7 +1173,10 @@ mod host {
                     // SAFETY: plain queries.
                     .filter(|&vk| unsafe { GetAsyncKeyState(i32::from(vk)) } < 0)
                     .collect();
+                record_keys(&held);
                 down.extend(held);
+            } else {
+                record_keys(&[]);
             }
             down.into_iter()
                 .map(|vk| KeyState {
@@ -1200,6 +1206,69 @@ mod host {
     /// without focus. A key is a letter, a digit, or `Enter`, `Esc`, `Tab`,
     /// `Back`, `Up`, `Down`, `Left`, `Right` (the stand-in pad's table maps
     /// them to buttons). Unset: nothing is pressed.
+    /// When input started: the clock `VICTORY_KEYS` counts from, and the one
+    /// recorded input events carry (`it`), so a recording replays as keys.
+    static INPUT_START: LazyLock<Instant> = LazyLock::new(Instant::now);
+
+    /// The `VICTORY_KEYS` name of a virtual key, or `vk0x..` for keys it has
+    /// no name for (recorded, not replayable).
+    fn key_name(vk: u8) -> String {
+        match vk {
+            0x0D => "Enter".into(),
+            0x1B => "Esc".into(),
+            0x09 => "Tab".into(),
+            0x08 => "Back".into(),
+            0x26 => "Up".into(),
+            0x28 => "Down".into(),
+            0x25 => "Left".into(),
+            0x27 => "Right".into(),
+            k if k.is_ascii_alphanumeric() => (k as char).to_string(),
+            k => format!("vk{k:#04x}"),
+        }
+    }
+
+    fn record_input(device: &str, vk: u8, down: bool) {
+        use victory_gpu::events::{Value, emit};
+        emit("input", &[
+            ("it", Value::Num(INPUT_START.elapsed().as_secs_f64())),
+            ("device", Value::Str(device)),
+            ("name", Value::Str(&key_name(vk))),
+            ("down", Value::Bool(down)),
+        ]);
+    }
+
+    /// Records the keyboard's real keys (not scripted ones) as they change,
+    /// for the harness (`VICTORY_EVENTS`).
+    fn record_keys(held: &[u8]) {
+        if !victory_gpu::events::enabled() {
+            return;
+        }
+        static LAST: Mutex<Vec<u8>> = Mutex::new(Vec::new());
+        let mut last = LAST.lock().unwrap_or_else(PoisonError::into_inner);
+        for &vk in held.iter().filter(|vk| !last.contains(vk)) {
+            record_input("key", vk, true);
+        }
+        for &vk in last.iter().filter(|vk| !held.contains(vk)) {
+            record_input("key", vk, false);
+        }
+        *last = held.to_vec();
+    }
+
+    /// Records the first pad's buttons as they change, named by the key the
+    /// stand-in pad maps to each (so a recording replays as `VICTORY_KEYS`).
+    fn record_pad(buttons: u32) {
+        if !victory_gpu::events::enabled() {
+            return;
+        }
+        static LAST: AtomicU32 = AtomicU32::new(0);
+        let last = LAST.swap(buttons, Ordering::Relaxed);
+        for &(vk, bit) in super::FALLBACK_BUTTONS.iter() {
+            if (buttons ^ last) & bit != 0 {
+                record_input("pad", vk, buttons & bit != 0);
+            }
+        }
+    }
+
     fn scripted() -> Vec<u8> {
         static SCRIPT: LazyLock<(Instant, Vec<(Duration, u8)>)> = LazyLock::new(|| {
             let list = std::env::var("VICTORY_KEYS").unwrap_or_default();
@@ -1224,7 +1293,7 @@ mod host {
                     vk,
                 ))
             });
-            (Instant::now(), keys.collect())
+            (*INPUT_START, keys.collect())
         });
         let (start, keys) = &*SCRIPT;
         let now = start.elapsed();

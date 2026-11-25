@@ -236,6 +236,10 @@ fn display_size() -> (u32, u32) {
             _ => (3840, 2160),
         };
         tracing::info!(width = size.0, height = size.1, "display mode reported to the title");
+        crate::events::emit("display", &[
+            ("width", crate::events::Value::Int(i64::from(size.0))),
+            ("height", crate::events::Value::Int(i64::from(size.1))),
+        ]);
         size
     })
 }

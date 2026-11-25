@@ -462,6 +462,7 @@ pub(crate) fn fail(what: std::fmt::Arguments) -> ! {
         if let Err(e) = unsafe { host.device.GetDeviceRemovedReason() } {
             text.push_str(&format!("; device removed: {e}"));
             log_removal_context();
+            crate::events::emit("removed", &[("reason", crate::events::Value::Str(&e.to_string()))]);
         }
         match host.log_messages() {
             Some(first) => text.push_str(&format!("; debug layer: {first}")),
@@ -647,7 +648,9 @@ fn adapter_line(adapter: &IDXGIAdapter3) -> String {
 }
 
 fn log_adapter(adapter: &IDXGIAdapter3) {
-    tracing::info!(adapter = %adapter_line(adapter), "host adapter");
+    let line = adapter_line(adapter);
+    crate::events::emit("adapter", &[("name", crate::events::Value::Str(&line))]);
+    tracing::info!(adapter = %line, "host adapter");
 }
 
 /// Peak commit of this process seen by [`log_memory`], in MB.
@@ -685,6 +688,19 @@ fn log_memory() {
     let committed = mb(process.PrivateUsage as u64);
     let peak = PEAK_COMMIT_MB.fetch_max(committed, Ordering::Relaxed).max(committed);
     let card = host().and_then(|h| h.video_memory()).unwrap_or_default();
+    {
+        use crate::events::{Value, emit};
+        let mbi = |b: u64| Value::Int((b >> 20) as i64);
+        emit("memory", &[
+            ("committed_mb", Value::Int(committed as i64)),
+            ("peak_mb", Value::Int(peak as i64)),
+            ("ram_mb", mbi(process.WorkingSetSize as u64)),
+            ("commit_free_mb", mbi(system.ullAvailPageFile)),
+            ("ram_free_mb", mbi(system.ullAvailPhys)),
+            ("card_mb", mbi(card[1])),
+            ("card_budget_mb", mbi(card[0])),
+        ]);
+    }
     tracing::info!(
         "memory: {committed} MB committed (peak {peak} MB), {} MB in RAM; system: {} MB of {} MB \
          commit free, {} MB of {} MB RAM free; card: {} of {} MB own, {} of {} MB shared",
@@ -5921,6 +5937,21 @@ impl Meter {
                 placed = crate::descriptor::host::PLACED_TEXTURE_SLOTS.load(Ordering::Relaxed),
                 objects = crate::descriptor::host::OBJECT_TEXTURE_SLOTS.load(Ordering::Relaxed)
             );
+            {
+                use crate::events::{Value, emit};
+                emit("frame", &[
+                    ("fps", Value::Num(fps)),
+                    ("ms", Value::Num(ms)),
+                    ("draws", Value::Num(draws)),
+                    ("dropped", Value::Num(dropped)),
+                    ("making", Value::Int(crate::pipeline::making() as i64)),
+                    ("preparing_ms", Value::Num(cpu)),
+                    ("gpu_ms", Value::Num(gpu)),
+                    ("copies_ms", Value::Num(copy_ms)),
+                    ("textures_ms", Value::Num(texture_ms)),
+                    ("back_ms", Value::Num(back_ms)),
+                ]);
+            }
             log_memory();
             #[cfg(feature = "diagnostics")]
             {

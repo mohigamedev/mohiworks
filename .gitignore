@@ -76,3 +76,6 @@
 *.swp
 Thumbs.db
 .DS_Store
+
+# The harness control app's dependencies (npm install in tools/control).
+node_modules/

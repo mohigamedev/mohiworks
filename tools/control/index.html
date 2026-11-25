@@ -1,0 +1,95 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; style-src 'self'; script-src 'self'" />
+  <title>VIctory control</title>
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <header>
+    <h1>VIctory control</h1>
+    <span id="job" class="badge idle">idle</span>
+    <span id="phase" class="badge">no run</span>
+    <span class="spacer"></span>
+    <button id="refresh" class="quiet">Refresh</button>
+    <button id="open-harness" class="quiet">Harness folder</button>
+  </header>
+
+  <main>
+    <section class="controls">
+      <div class="card">
+        <h2>Run a scenario</h2>
+        <label>Scenario <select id="scenario"></select></label>
+        <p id="scenario-info" class="muted"></p>
+        <div class="row">
+          <button id="run">Run</button>
+          <button id="run-all" class="quiet">Run all</button>
+        </div>
+      </div>
+
+      <div class="card">
+        <h2>Record a scenario</h2>
+        <p class="muted">Play normally, then close the game. Your key and pad presses become the scenario's scripted input.</p>
+        <label>Scenario name <input id="rec-name" placeholder="world-continue" /></label>
+        <label>Start from snapshot <select id="rec-snapshot"></select></label>
+        <label>Graphics preset <select id="rec-preset"></select></label>
+        <label>Switches <input id="rec-env" placeholder="VICTORY_PROFILE=low;VICTORY_RELAY=2" /></label>
+        <label>Save end state as snapshot <input id="rec-snapshot-as" placeholder="world" /></label>
+        <button id="record">Record</button>
+      </div>
+
+      <div class="card">
+        <h2>Data folder</h2>
+        <label>Snapshot name <input id="snap-name" placeholder="world" /></label>
+        <div class="row">
+          <button id="snapshot" class="quiet">Save snapshot</button>
+          <button id="restore" class="quiet">Restore last backup</button>
+        </div>
+      </div>
+
+      <div class="card">
+        <button id="stop" class="danger">Stop the game</button>
+      </div>
+    </section>
+
+    <section class="live">
+      <div class="tiles">
+        <div class="tile"><span class="label">Frame time</span><span id="t-ms" class="value">–</span></div>
+        <div class="tile"><span class="label">FPS</span><span id="t-fps" class="value">–</span></div>
+        <div class="tile"><span class="label">Dropped draws</span><span id="t-dropped" class="value">–</span></div>
+        <div class="tile"><span class="label">Pipelines being made</span><span id="t-making" class="value">–</span></div>
+        <div class="tile"><span class="label">Committed</span><span id="t-commit" class="value">–</span></div>
+        <div class="tile"><span class="label">RAM free</span><span id="t-ram" class="value">–</span></div>
+      </div>
+      <div class="card">
+        <h2>Frame time (ms) <span class="muted" id="adapter"></span></h2>
+        <canvas id="chart" height="160"></canvas>
+      </div>
+      <div class="split">
+        <div class="card">
+          <h2>Input <span class="muted">(input-clock seconds)</span></h2>
+          <ol id="inputs" class="list"></ol>
+        </div>
+        <div class="card">
+          <h2>Errors and warnings</h2>
+          <ol id="logs" class="list"></ol>
+        </div>
+      </div>
+      <div class="card">
+        <h2>Harness output</h2>
+        <pre id="output"></pre>
+      </div>
+    </section>
+
+    <section class="results card">
+      <h2>Results</h2>
+      <table>
+        <thead><tr><th>When</th><th>Scenario</th><th>Verdict</th><th>World ms</th><th>Dropped</th><th>Peak commit</th><th>Paging /s</th></tr></thead>
+        <tbody id="results"></tbody>
+      </table>
+    </section>
+  </main>
+  <script src="renderer.js"></script>
+</body>
+</html>

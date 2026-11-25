@@ -185,7 +185,11 @@ and scripted input kept in `%LOCALAPPDATA%\victory\harness`:
 .\scripts\harness.ps1 list
 .\scripts\harness.ps1 snapshot world       # after saving in the world
 .\scripts\harness.ps1 run world-continue   # or: ninja scenarios
+.\scripts\harness.ps1 record my-route -SnapshotAs world   # play; your presses become the scenario's keys
 .\scripts\smoke.ps1 -Seconds 300 -Env 'VICTORY_PROFILE=low'   # quick one-off
+
+# The control app (Electron): run and record scenarios, follow a run live.
+cd tools\control; npm install; npm start
 victory run <exe> [--execute] [--unimplemented trap|zero] [--strict]
             [--console series-x|series-s] [-- <title arguments>]
 victory config
@@ -220,6 +224,7 @@ cargo build --profile diag -p victory --features diagnostics   # target\diag\vic
 | `VICTORY_D3D12_WARP=1` | host device on the software adapter (slow; cannot reset the driver) |
 | `VICTORY_SHADER_LOOP_LIMIT=<n>` | (any build) translated shader loops stop after `n` iterations per lane and per loop entry, in every stage, instead of the per-stage caps (pixel 128, vertex and mesh 256, compute 4,096); own shader cache entries. If a lower `n` makes world frames much faster, loops hitting the limit are what makes them slow |
 | `VICTORY_PROFILE=low` | (any build) trade correctness of effects for frames: every translated loop stops after 64 iterations unless `VICTORY_SHADER_LOOP_LIMIT` says otherwise. Precompile with the same setting |
+| `VICTORY_EVENTS=<file>` | (any build) one JSON line per event: start, adapter, display mode, input (key and pad presses on the `VICTORY_KEYS` clock), frame statistics, memory, device removal. The harness sets it for every run |
 | `VICTORY_DISPLAY_MODE=WxH` | (any build) the display mode reported to the title (default 3840x2160). Grand Theft Auto VI still presents 3840x2160 with a smaller mode (2026-11-25): its output size comes from elsewhere |
 | `VICTORY_AUDIO_CAPTURE=<file.wav>` | records what the title plays (our process only) |
 | `VICTORY_XMA_DUMP=<dir>` | saves the first 32 XMA voices' context and input |

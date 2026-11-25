@@ -1,0 +1,14 @@
+{
+  "name": "victory-control",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Control app for the VIctory test harness: run and record scenarios, follow a run's events live.",
+  "license": "GPL-3.0-or-later",
+  "main": "main.js",
+  "scripts": {
+    "start": "electron ."
+  },
+  "devDependencies": {
+    "electron": "45.3.0"
+  }
+}

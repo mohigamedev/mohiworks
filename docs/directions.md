@@ -171,8 +171,27 @@ Each scenario is a small file:
   user's own settings came back byte for byte afterwards. Paging counters
   were sampled (median 3,500 hard-faulted pages/s at boot), and the
   result was written as JSON.
-- **To do:** a `world` snapshot from the user's save, and the key timings
-  of the menu flow.
+- **Event stream.** `VICTORY_EVENTS=<file>` makes the layer write JSON
+  lines (`victory-gpu/src/events.rs`): start, adapter, display mode,
+  input, frame statistics, memory and device removal. Input events carry
+  the `VICTORY_KEYS` clock. The harness sets the variable for every run.
+- **Recording.** `harness.ps1 record <name> [-Snapshot] [-Preset] [-Env]
+  [-SnapshotAs]` runs until the title is closed. The real key and pad
+  presses become the new scenario's `keys`, so menu timings are captured
+  rather than guessed. `-SnapshotAs` keeps the end state, for example
+  `world`.
+- **Control app** (`tools/control`, Electron 45.3.0). It runs, records,
+  snapshots and restores, and stops the title. While a run is on it
+  shows:
+  - the phase (menus, loading, world, crashed);
+  - frame time, fps, dropped draws, pipelines being made, commit and free
+    RAM, with a frame-time chart;
+  - inputs as they happen;
+  - errors and warnings from the log;
+  - results from earlier runs.
+- **To do:** record the route into the world once, saving it as the
+  `world` snapshot; that replaces the guessed keys in the world
+  scenarios.
 
 **Stage 2: control switches.** These are the title's rigid limits: 4K
 output, the 30/60 fps lock, its own settings. Each becomes a harness

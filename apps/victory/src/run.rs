@@ -27,6 +27,10 @@ pub fn run(
         None => println!("build          unknown ({hash})"),
     }
 
+    victory_gpu::events::emit("start", &[(
+        "pid",
+        victory_gpu::events::Value::Int(i64::from(std::process::id())),
+    )]);
     let images = cfg.cache_subdir("images")?;
     victory_hle::modules::d3d12x::use_shader_cache(cfg.cache_subdir("shaders")?);
     let image = victory_loader::load(&prepared, &images)?;
