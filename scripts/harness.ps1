@@ -65,7 +65,9 @@ param(
     # logs why draws are dropped, per reason, beside the frame lines.
     [switch]$Diag,
     # Run another build of victory.exe (a control run with an older build).
-    [string]$Victory = ''
+    [string]$Victory = '',
+    # Leave the machine's power mode as it is (a mode set by hand).
+    [switch]$KeepPower
 )
 
 $ErrorActionPreference = 'Stop'
@@ -380,7 +382,7 @@ function Exit-FullPower {
     }
 }
 
-if ($Command -in 'run', 'run-all', 'audit', 'record') { Enter-FullPower }
+if (-not $KeepPower -and $Command -in 'run', 'run-all', 'audit', 'record') { Enter-FullPower }
 try {
 switch ($Command) {
     'record' {
@@ -454,5 +456,5 @@ switch ($Command) {
 }
 }
 finally {
-    if ($Command -in 'run', 'run-all', 'audit', 'record') { Exit-FullPower }
+    if (-not $KeepPower -and $Command -in 'run', 'run-all', 'audit', 'record') { Exit-FullPower }
 }
