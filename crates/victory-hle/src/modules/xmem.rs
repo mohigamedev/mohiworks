@@ -203,6 +203,7 @@ pub extern "system" fn XMemVirtualQuery(
     1
 }
 
+// unverified(nda): XMemAlloc attribute bits | src=call | id=A005
 // `XMemAlloc` attributes: alignment as log2 (5 bits at 24, 4 bytes and up
 // from 2), then the memory type, then bit 33: a 32-bit address.
 const ALIGNMENT_SHIFT: u64 = 24;

@@ -1,3 +1,4 @@
+// unverified(nda): the BCPack format and its tables | src=call, title data | id=A009
 //! BCPack: lossless packing of BC1-BC7 block streams, as the console's
 //! DirectStorage hardware unpacks them. Decode only; BC2 is left out (no
 //! title data uses it).

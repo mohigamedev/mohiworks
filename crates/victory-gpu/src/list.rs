@@ -2167,6 +2167,7 @@ const fn list_table(newer: bool) -> [*const (); 160] {
 
 /// Every slot up to the limit exists and logs, for the methods newer
 /// titles add.
+// unverified(nda): the command list method slots, console methods among them | src=call | id=A002
 static LIST_FUNCTIONS: Table<160> = Table(list_table(false));
 static NEWER_LIST_FUNCTIONS: Table<160> = Table(list_table(true));
 

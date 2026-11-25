@@ -1,3 +1,4 @@
+//! unverified(nda): the console's default float mode | src=public (AMD ISA), measured | id=A008
 //! Switches that make translated shaders exact to the console's float rules
 //! where the host differs, at a cost in GPU time. Both are off by default.
 

@@ -1,3 +1,4 @@
+// unverified(nda): DirectStorage requests, queues, physical pages | src=call | id=A012
 //! The console's DirectStorage (`XCRDAPI.dll`): a factory that opens files
 //! and creates request queues and status arrays the title polls. Its
 //! interfaces have grown since 2020 (new interface ids, new slots); the

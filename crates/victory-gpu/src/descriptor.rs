@@ -1,3 +1,4 @@
+// unverified(nda): descriptor heap and view layouts, the creation-interface layouts | src=call, measured | id=A004
 //! Descriptor heaps: zeroed memory, with handles that are plain addresses
 //! (CPU and GPU alike, as on the console).
 //!

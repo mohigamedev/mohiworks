@@ -19,6 +19,7 @@ impl Console {
     // shortcut: later system updates gave Series S titles more (amount not
     // published here); the title sizes nothing from this figure
     // (it goes by the device type), so update it if a title does.
+    // unverified(nda): title memory budgets | src=public figure, call | id=A006
     pub const fn title_memory(self) -> (usize, usize) {
         match self {
             Console::SeriesX => (10 * GIB, 7 * GIB / 2),

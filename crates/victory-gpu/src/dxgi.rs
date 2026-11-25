@@ -178,6 +178,7 @@ extern "system" fn output_parent(_: This, iid: *const Iid, out: *mut This) -> HR
 }
 
 /// IUnknown 3, object 4, device 5 + 2 + 3.
+// unverified(nda): DXGI device, adapter, factory and output method slots | src=call | id=A003
 static DEVICE_FUNCTIONS: Table<32> = {
     let mut f = object::missing_table::<DXGI_DEVICE, 32>();
     f[0] = device_query as *const ();

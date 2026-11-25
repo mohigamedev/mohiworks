@@ -1,3 +1,4 @@
+// unverified(nda): save container format and behaviour | src=call | id=A011
 //! XGameSave: the user's game saves, kept on the host under the title's
 //! data directory, next to persistent local storage (`runtime::Title::
 //! saves`), never in the cache. A provider is a folder per user and

@@ -1,3 +1,4 @@
+// unverified(nda): XMA as the console decodes it | src=public (FFmpeg), call | id=A010
 //! XMA2, the console's hardware audio codec: mono or stereo WMA Pro frames of
 //! 512 samples per channel, packed into 2048-byte packets.
 //!
