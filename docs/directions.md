@@ -480,6 +480,37 @@ Still ours to build after I1-I7 (nobody has them): D3 GPU detile, D2 class B
 tiles, D6 pacing and the 30 fps lock, D7 pool root cause, D5 symbols, the
 195 merged geometry-stage programs.
 
+#### B1/I2 design choice (2026-11-25)
+
+- **Upstream (I2)** keeps a host copy of every title buffer and makes the copy
+  cheaper to keep right: one change journal per 64 KiB page, one page table
+  per view heap, shader write marks (copy-back compares only marked pages).
+  Copies and a compare remain. No placed heap is needed (it never calls
+  `OpenExistingHeapFromAddress`), but it rewrites the emitter (`lower.rs`
+  +670 lines, near the 512 KiB limit), the bindless passes and the watch layer,
+  which both trees rewrote: every pick conflicts.
+- **belobug (B1)** removes the copy: `direct()` opens the committed run of one
+  allocation with `ID3D12Device13::OpenExistingHeapFromAddress1` and places a
+  buffer over it; nothing is copied or copied back there, the rest still
+  copies. The page pool is covered because its `xmem` shows a reservation as
+  one view that is never remapped (an opened heap pins its pages).
+- **They combine** as direct for what can be opened plus write marks for what
+  still copies; marks pay only if the leftover copies are large and
+  GPU-written, so I2 waits for `back_ms` after B1.
+- **D2 class A** is the direct approach (no host copy at all); marks make a
+  copy cheaper but do not virtualize the memory.
+- **We have B1's mechanism**: `inplace.rs` (`VICTORY_INPLACE`) places buffers
+  over `Address1` and `Shadow::placed` binds them like copies; it was off, and
+  private memory only. So: on by default (level 2), the title's frees let go
+  first, and the one piece that lets view memory in, `xmem` showing a
+  reservation whole (`VICTORY_INPLACE_VIEWS=1`, off: it changes what pages the
+  title sees). B2 overlaps ours (hole cache = `absent`, every-view guard =
+  alias index) and its commit sets a 240 fps default: not taken.
+- **RX 6800M risks**: needs `ID3D12Device13` (else copies); in-place heaps are
+  system memory read over PCIe (GPU time, not CPU sync); pages are pinned
+  (`VICTORY_INPLACE_MB`); tile mappings into such heaps remove the device
+  (never made). Measured on WARP only so far.
+
 ### 4c. Evidence track (E-items, proposed, for review)
 
 Fixed facts these are rated against: the consoles are x86-64 (Zen 2, RDNA 2);
