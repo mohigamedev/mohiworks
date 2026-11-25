@@ -557,6 +557,23 @@ tiles, D6 pacing and the 30 fps lock, D7 pool root cause, D5 symbols, the
 - Next: scattered and holed windows (2.3 GB) through a reserved resource
   whose tiles map onto section heaps; then on by default after a soak.
 
+Later the same day:
+- Tiles are out: "UpdateTileMappings does not work with cross-adapter
+  shared heaps" (debug layer), and every opened heap is one. Scattered
+  windows (~210 MB) stay copies; the probe is kept (`inplace/tiles.rs`).
+- A window that is one run and then nothing mapped is placed too (5-15 a
+  run: most holed windows are not of that form).
+- Opened sections come out of the card's shared budget (7.2 GB here), and
+  the host's own copies take ~6 GB of it later in a run: 1.3 GB open
+  early ran it out a minute later and the title exited. Sections open are
+  capped (`VICTORY_INPLACE_POOL_MB`, 512) besides 1 GiB of budget left.
+- Soak (720 s) with the cap: PASS, world median 194 ms, shared peak 6.9 of
+  7.2 GB. Route: 183 ms against 211 in place alone.
+- DirectStorage: the title fills a request's page list after enqueueing;
+  copying it at enqueue read 0 almost always. A 0 is now waited for.
+- Off by default still: the margin on this 16 GB machine is small. Shrinking
+  the host's own copies is what makes room.
+
 ### 4c. Evidence track (E-items, proposed, for review)
 
 Fixed facts these are rated against: the consoles are x86-64 (Zen 2, RDNA 2);

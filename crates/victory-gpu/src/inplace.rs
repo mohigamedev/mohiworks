@@ -219,6 +219,16 @@ pub(crate) fn place_for(start: u64, len: u64, window: bool) -> Option<Placed> {
 /// ([`title_memory_section_gone`]); opening makes all of it resident.
 static SECTION_HEAPS: Mutex<Vec<(usize, ID3D12Heap, u64)>> = Mutex::new(Vec::new());
 
+/// The most bytes of sections open at once (`VICTORY_INPLACE_POOL_MB`,
+/// 512): they come out of the card's shared memory budget, which the host's
+/// own copies fill later in a run (the budget left when a section opens
+/// says little: 1.3 GB open early, the shared budget ran out a minute
+/// later and the title exited; 0.5-0.8 GB held, 2026-11-25).
+fn pool_most() -> u64 {
+    static MOST: std::sync::OnceLock<u64> = std::sync::OnceLock::new();
+    *MOST.get_or_init(|| std::env::var("VICTORY_INPLACE_POOL_MB").ok().and_then(|v| v.trim().parse::<u64>().ok()).unwrap_or(512) << 20)
+}
+
 /// Bytes of sections opened as heaps.
 static SECTIONS_OPEN: AtomicU64 = AtomicU64::new(0);
 
@@ -252,7 +262,7 @@ fn place_in_section(
             Some(h) => h.1.clone(),
             None => {
                 const HEADROOM: u64 = 1 << 30;
-                if SECTIONS_OPEN.load(Ordering::Relaxed) + bytes_of_section > most()
+                if SECTIONS_OPEN.load(Ordering::Relaxed) + bytes_of_section > most().min(pool_most())
                     || room().is_some_and(|room| room < bytes_of_section + HEADROOM)
                 {
                     STATS[6].fetch_add(1, Ordering::Relaxed);
@@ -342,7 +352,7 @@ fn say() {
     let s: Vec<u64> = STATS.iter().map(|s| s.load(Ordering::Relaxed)).collect();
     tracing::info!(
         "title memory in place: {} windows {} MB, {} title buffers {} MB (no copy, no refresh, no copy-back); turned down: {} view memory or not private memory committed whole, \
-         {} refused by the host, {} over VICTORY_INPLACE_MB or the card's shared budget; {} let go because their memory changed; {} placed in sections of physical pages so far ({} reaching past what is mapped), {} MB of sections open",
+         {} refused by the host, {} over VICTORY_INPLACE_MB, VICTORY_INPLACE_POOL_MB or the card's shared budget; {} let go because their memory changed; {} placed in sections of physical pages so far ({} reaching past what is mapped), {} MB of sections open",
         s[0],
         s[1] >> 20,
         s[2],
