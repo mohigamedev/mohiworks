@@ -55,7 +55,7 @@ const K64: usize = 64 << 10;
 const MEM_WRITE_WATCH: u32 = 0x20_0000;
 
 /// `VICTORY_INPLACE_PROBE`: 0 (unset) nothing; 1 the probe on memory of
-/// its own at the first sweep, and the census 30 and 150 seconds later;
+/// its own at the first sweep, and the census 30, 150 and 300 seconds later;
 /// 2 also opens one part of the title's own memory for a moment at the
 /// first census.
 pub(crate) fn probe_level() -> u8 {
@@ -1132,6 +1132,7 @@ pub(crate) fn tick() {
     let due = match DONE.load(Ordering::Relaxed) {
         0 => now >= started + 30_000,
         1 => now >= started + 150_000,
+        2 => now >= started + 300_000,
         _ => false,
     };
     if due {

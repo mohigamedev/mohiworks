@@ -705,7 +705,14 @@ const WHOLE: usize = 1 << 30;
 /// shows the bytes at its first place, not the ones it asked for (warned).
 fn map_whole(physical: &mut Physical, base: usize, pages: &[usize]) -> bool {
     let end = base + pages.len() * PAGE;
+    static EARLY: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+    let early = |why: &str| {
+        if EARLY.fetch_add(1, std::sync::atomic::Ordering::Relaxed) < 20 {
+            tracing::info!(base = format_args!("{base:#x}"), pages = pages.len(), why, "a mapping of physical pages not shown whole");
+        }
+    };
     let Some(first) = physical.pages.get(&pages[0]).cloned() else {
+        early("its first page is not known");
         return false;
     };
     let known = physical
@@ -721,13 +728,25 @@ fn map_whole(physical: &mut Physical, base: usize, pages: &[usize]) -> bool {
                 .iter()
                 .find(|(at, len)| *at <= base && end <= at + len)
             else {
+                early("no reservation of physical pages holds it");
                 return false;
             };
-            if len > WHOLE
-                || len != first.section.1
-                || physical.views.range(..at + len).next_back().is_some_and(|(v, (n, _))| v + n > at)
-                || physical.whole.iter().any(|w| Arc::ptr_eq(&w.2, &first.section))
-            {
+            let why = if len > WHOLE {
+                Some("longer than 1 GiB")
+            } else if len != first.section.1 {
+                Some("the reservation is not as long as the allocation")
+            } else if physical.views.range(..at + len).next_back().is_some_and(|(v, (n, _))| v + n > at) {
+                Some("pages of it are mapped already")
+            } else if physical.whole.iter().any(|w| Arc::ptr_eq(&w.2, &first.section)) {
+                Some("the allocation is shown whole elsewhere")
+            } else {
+                None
+            };
+            if let Some(why) = why {
+                static SAID: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+                if SAID.fetch_add(1, std::sync::atomic::Ordering::Relaxed) < 40 {
+                    tracing::info!(at = format_args!("{at:#x}"), len, section = first.section.1, why, "a reservation of physical pages not shown whole");
+                }
                 return false;
             }
             let all = Slice {

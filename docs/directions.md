@@ -511,6 +511,34 @@ tiles, D6 pacing and the 30 fps lock, D7 pool root cause, D5 symbols, the
   (`VICTORY_INPLACE_MB`); tile mappings into such heaps remove the device
   (never made). Measured on WARP only so far.
 
+#### B1 census on the route (2026-11-25, Series S, `VICTORY_INPLACE_PROBE=1`)
+
+- In place by default: 3,561 title buffers (150 MB) and 75 windows (352 MB);
+  route PASS, no removals. Same machine state, views on or off: world median
+  213-219 ms.
+- `VICTORY_INPLACE_VIEWS=1` shows one reservation whole (185 MB). The page
+  pool is not: the title reserves **16 GiB** and maps pages of one **3,977 MB**
+  allocation into it, page by page (~90,000 views of 64 KiB at 300 s). The
+  belobug condition (reservation as long as the allocation, at most 1 GiB)
+  cannot hold: their tree sees another layout, so B1's view half does not
+  carry over as written.
+- Windows outside buffers at 300 s, 3,680 MB: view memory with unmapped pages
+  2,068 MB; private memory not committed whole or guarded 1,276 MB; one run
+  of a section 309 MB; scattered pages 208 MB; private committed whole
+  241 MB (already in place).
+- The pool's sections are made reserved, and a reserved section is refused as
+  a heap (`OpenExistingHeapFromFileMapping` E_INVALIDARG); made committed it
+  opens, and a buffer placed at a view's section offset reads and writes.
+- So the next step for view memory is not a whole view but the section: make
+  the pool committed (commit charge of ~4 GB up front, pages still touched
+  lazily), open it once as a heap, and place one-run windows at their section
+  offset (309 MB). Scattered and holed windows (2.3 GB) need the GPU to see
+  the title's page mapping: a reserved resource whose 64 KiB tiles are mapped
+  onto the section heap mirrors `XMemMapPhysicalPages` one to one (the
+  console page is the tile size). Tile mappings into address-opened heaps
+  removed the device before; into a file-mapping heap is untested: WARP and
+  card probe first.
+
 ### 4c. Evidence track (E-items, proposed, for review)
 
 Fixed facts these are rated against: the consoles are x86-64 (Zen 2, RDNA 2);
