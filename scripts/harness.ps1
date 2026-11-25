@@ -47,7 +47,7 @@
   .\scripts\harness.ps1 run-all
 #>
 param(
-    [Parameter(Position = 0)][ValidateSet('list', 'run', 'run-all', 'snapshot', 'restore', 'record', 'audit')]
+    [Parameter(Position = 0)][ValidateSet('list', 'run', 'run-all', 'snapshot', 'restore', 'record', 'audit', 'symbols')]
     [string]$Command = 'list',
     [Parameter(Position = 1)][string]$Name = '',
     [switch]$Keep,
@@ -228,6 +228,53 @@ function Invoke-Audit {
     return $true
 }
 
+# The local symbol store for this layer's own builds (docs/directions.md E2),
+# outside the repo: %LOCALAPPDATA%\victory\symbols, in the symbol-server
+# layout `victory.pdb\<KEY>\victory.pdb` (KEY: the exe's CodeView GUID and
+# age), with the exe beside it under the same key. Every run files the
+# build it runs, so a crash log's key always finds its exact PDB. Builds
+# are never matched by anything but the exact key.
+$symbolStore = Join-Path $env:LOCALAPPDATA 'victory\symbols'
+function Save-Symbols([string]$Exe) {
+    $info = cmd /c "`"$Exe`" inspect `"$Exe`" 2>&1"
+    $keyLine = $info | Select-String 'pdb\s+(\S+)\s+\(key ([0-9A-F]+)\)' | Select-Object -First 1
+    if (-not $keyLine) { Write-Host 'symbols        no CodeView key in the exe: not filed'; return $null }
+    $key = $keyLine.Matches[0].Groups[2].Value
+    $pdbName = Split-Path $keyLine.Matches[0].Groups[1].Value -Leaf
+    $pdb = Join-Path (Split-Path $Exe -Parent) $pdbName
+    $dir = Join-Path $symbolStore "$pdbName\$key"
+    $exeDir = Join-Path $symbolStore "$(Split-Path $Exe -Leaf)\$key"
+    if (Test-Path (Join-Path $dir $pdbName)) { return $key }
+    if (-not (Test-Path $pdb)) { Write-Host "symbols        no $pdb beside the exe: key $key not filed"; return $key }
+    New-Item -ItemType Directory -Force $dir, $exeDir | Out-Null
+    Copy-Item $pdb (Join-Path $dir $pdbName)
+    Copy-Item $Exe (Join-Path $exeDir (Split-Path $Exe -Leaf))
+    $blake = ($info | Select-String '^blake3\s+(\S+)' | Select-Object -First 1).Matches[0].Groups[1].Value
+    $commit = (git -C $script:RepoRoot rev-parse --short=12 HEAD) 2>$null
+    [ordered]@{ key = $key; pdb = $pdbName; blake3 = $blake; head = $commit; filed = (Get-Date -Format s); from = $Exe } |
+        ConvertTo-Json -Compress | Add-Content (Join-Path $symbolStore 'index.jsonl')
+    Write-Host "symbols        filed $pdbName $key"
+    return $key
+}
+
+# Keys a run or crash log names: kept forever. Others go after 30 days.
+function Invoke-SymbolsPrune {
+    $keep = @{}
+    foreach ($f in Get-ChildItem (Join-Path $paths.Harness 'results') -Recurse -Filter result.json -ErrorAction SilentlyContinue) {
+        $j = Get-Content $f.FullName -Raw | ConvertFrom-Json
+        if ($j.build.victory_key) { $keep[$j.build.victory_key] = $true }
+    }
+    foreach ($log in Get-ChildItem $paths.Data -Recurse -Filter crashes.log -ErrorAction SilentlyContinue) {
+        foreach ($m in (Select-String -Path $log.FullName -Pattern 'build victory key=([0-9A-F]+)' -AllMatches)) { $keep[$m.Matches[0].Groups[1].Value] = $true }
+    }
+    $cut = (Get-Date).AddDays(-30); $removed = 0; $kept = 0
+    foreach ($d in Get-ChildItem $symbolStore -Directory -ErrorAction SilentlyContinue | ForEach-Object { Get-ChildItem $_.FullName -Directory }) {
+        if ($keep[$d.Name] -or $d.LastWriteTime -gt $cut) { $kept++; continue }
+        Remove-Item -Recurse -Force $d.FullName; $removed++
+    }
+    Write-Host "symbols        $kept kept ($($keep.Count) keys named by runs or crash logs), $removed removed"
+}
+
 function Test-Pass($r, $pass) {
     $fails = @()
     if (-not $pass) { $pass = [pscustomobject]@{} }
@@ -263,6 +310,7 @@ function Invoke-Scenario([string]$ScenarioName, $Given = $null) {
     New-Item -ItemType Directory -Force $out | Out-Null
     Write-Host "scenario       $ScenarioName -> $out"
 
+    [void](Save-Symbols $paths.Victory)
     $title = Get-TitleData
     $backup = Join-Path $paths.Harness 'backup\data'
     if (-not (Test-TitleData $title)) {
@@ -443,6 +491,11 @@ switch ($Command) {
     'run' {
         if (-not $Name) { throw 'run needs a scenario name' }
         if (-not (Invoke-Scenario $Name)) { exit 1 }
+    }
+    'symbols' {
+        $key = Save-Symbols $paths.Victory
+        Write-Host "symbols        current build key $key; store $symbolStore"
+        Invoke-SymbolsPrune
     }
     'audit' {
         if (-not (Invoke-Audit)) { exit 1 }
