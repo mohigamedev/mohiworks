@@ -356,26 +356,23 @@ function ConvertTo-Keys([string]$Events) {
     return ($keys -join ',')
 }
 
-# Full power for runs: when the scheduled tasks VictoryTurbo / VictorySilent
-# exist (outside the repo: the machine's own fan and power modes, set by a
-# task with admin rights), a run switches to Turbo first, and afterwards
-# back to Silent while it is before $QuietUntil o'clock (the machine stays
-# in Turbo after that). Without the tasks nothing changes.
+# Full power for runs: when the machine's own power-mode script exists
+# (outside the repo: ..\tools\power-profile.ps1 beside this checkout, which
+# sets the laptop's fan and power mode), a run switches to Turbo first, and
+# afterwards back to Silent while it is before $QuietUntil o'clock (the
+# machine stays in Turbo after that). Without the script nothing changes.
 $QuietUntil = 9
-function Test-PowerTask([string]$Name) {
-    cmd /c "schtasks /query /tn $Name >nul 2>&1"
+$powerScript = Join-Path (Split-Path $script:RepoRoot -Parent) 'tools\power-profile.ps1'
+function Set-PowerMode([string]$Mode) {
+    if (-not (Test-Path $powerScript)) { return $false }
+    & powershell -NoProfile -ExecutionPolicy Bypass -File $powerScript -Mode $Mode | Out-Null
     return $LASTEXITCODE -eq 0
 }
 function Enter-FullPower {
-    if (Test-PowerTask 'VictoryTurbo') {
-        cmd /c "schtasks /run /tn VictoryTurbo >nul 2>&1"
-        Write-Host 'power          Turbo for this run'
-        Start-Sleep -Seconds 3
-    }
+    if (Set-PowerMode 'turbo') { Write-Host 'power          Turbo for this run'; Start-Sleep -Seconds 3 }
 }
 function Exit-FullPower {
-    if ((Get-Date).Hour -lt $QuietUntil -and (Test-PowerTask 'VictorySilent')) {
-        cmd /c "schtasks /run /tn VictorySilent >nul 2>&1"
+    if ((Get-Date).Hour -lt $QuietUntil -and (Set-PowerMode 'silent')) {
         Write-Host "power          back to Silent (quiet until $($QuietUntil):00)"
     }
 }

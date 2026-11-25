@@ -1070,6 +1070,23 @@ fn f16_nearest_on() -> bool {
 thread_local! {
     /// A test's choice for [`f16_nearest_on`], for its thread only.
     pub(super) static TEST_F16_NEAREST: std::cell::Cell<Option<bool>> = const { std::cell::Cell::new(None) };
+    /// A test's choice for [`exact_floats_on`], for its thread only.
+    pub(super) static TEST_EXACT_FLOATS: std::cell::Cell<Option<bool>> = const { std::cell::Cell::new(None) };
+}
+
+/// `VICTORY_EXACT_FLOATS=1`: 32-bit denormal operands read as zeros on the bits, as the
+/// console's float mode reads them, before maximums, minimums, medians, conversions and
+/// output modifiers. Off by default (the host's own denormal mode decides): it adds about a
+/// dozen instructions to every maximum and minimum; with it always on, a gameplay frame
+/// took about four times the GPU time (2026-11-25, Series S route). -0 ordered below +0
+/// in maximums and minimums is kept either way.
+fn exact_floats_on() -> bool {
+    #[cfg(test)]
+    if let Some(on) = TEST_EXACT_FLOATS.get() {
+        return on;
+    }
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| std::env::var_os("VICTORY_EXACT_FLOATS").is_some_and(|v| v == "1"))
 }
 
 /// `VICTORY_WAVE_OWN_BITS=0`: a wave OR where not every lane runs is refused as before
@@ -3296,7 +3313,12 @@ impl<'a> Lower<'a> {
 
     /// A 32-bit denormal as the console's float mode reads it: a zero of its
     /// sign, decided on the bits (the host's own denormal mode varies).
+    // shortcut: only with `VICTORY_EXACT_FLOATS=1` ([`exact_floats_on`]); else the host's
+    // own denormal mode.
     fn ftz(&mut self, f: V) -> V {
+        if !exact_floats_on() {
+            return f;
+        }
         let c = self.cur;
         let x = self.as_int(f);
         let (exp, sign, zero) = (

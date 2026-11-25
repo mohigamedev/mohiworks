@@ -25,18 +25,23 @@ use crate::native::{
 };
 use crate::{gfx10, io, ir, resource, structure};
 
-/// Turns exact 16-bit rounding on for the test's thread while held.
-struct Nearest(Option<bool>);
+/// Turns the console-exact float switches (16-bit rounding, `VICTORY_EXACT_FLOATS`) on
+/// for the test's thread while held.
+struct Nearest(Option<bool>, Option<bool>);
 
 impl Nearest {
     fn on() -> Self {
-        Nearest(super::lower::TEST_F16_NEAREST.replace(Some(true)))
+        Nearest(
+            super::lower::TEST_F16_NEAREST.replace(Some(true)),
+            super::lower::TEST_EXACT_FLOATS.replace(Some(true)),
+        )
     }
 }
 
 impl Drop for Nearest {
     fn drop(&mut self) {
         super::lower::TEST_F16_NEAREST.set(self.0);
+        super::lower::TEST_EXACT_FLOATS.set(self.1);
     }
 }
 
@@ -1326,6 +1331,8 @@ fn min_max_probes() -> Vec<Probe> {
 
 #[test]
 fn min_max_and_clamp_match_the_hardware() {
+    // the console-exact float switches are opt-in; these check them
+    let _exact = Nearest::on();
     assert_clean(check(&passing(min_max_probes())));
 }
 
@@ -2793,6 +2800,8 @@ fn output_multipliers_give_positive_zero() {
 /// did not, and a flushed denormal met +0 as an equal).
 #[test]
 fn min_max_and_selects_take_denormals_on_the_bits() {
+    // the console-exact float switches are opt-in; these check them
+    let _exact = Nearest::on();
     let mut p = min_max_probes();
     p.extend(select_probes());
     defect(p, DENORMAL);
@@ -2844,6 +2853,8 @@ fn floor_conversions_match_the_hardware() {
 /// plain DXIL `FMin`/`FMax` gave either zero (the adapters differed).
 #[test]
 fn med3_orders_signed_zeros() {
+    // the console-exact float switches are opt-in; these check them
+    let _exact = Nearest::on();
     defect(min_max_probes(), MED3_ZERO);
 }
 
