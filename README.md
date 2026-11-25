@@ -12,15 +12,16 @@ publisher or by Microsoft.
 
 ## Status (2026-11-25)
 
-**Not playable yet: about 5 frames per second in the world.** Tested on one
+**Not playable yet: about 5 frames per second in the world, and the
+prologue's gameplay shows a black picture.** Tested on one
 machine: Windows 11, AMD Radeon RX 6800M 12 GB, 16 GB RAM (paging file
 enlarged), as a Series S.
 
 | Stage | State |
 |-------|-------|
 | Boot, splash, start screen | works, 30 fps; the start screen is passed by scripted input at 11 s |
-| Opening cutscenes | play; skipped by holding A |
-| Prologue gameplay | renders at 4.1-5.7 fps as a Series S (1080p), 1.5-2.8 as a Series X (4K) |
+| Opening cutscenes | play (title cards show); skipped by holding A |
+| Prologue gameplay | the title draws about 4,400 draws a frame at 4.1-5.7 fps as a Series S (1080p), 1.5-2.8 as a Series X (4K), but **the picture is black**: the scene is lit by the title's ray-traced light, which does not run yet (its structure builder is the 255 dropped draws below). A window capture of a whole route (2026-11-25) shows title cards, then black |
 | Pause menu | works, 22-25 fps; card memory stays flat across it |
 | Stability | the recorded route (400 s) and a 12-minute soak pass unattended: no crash, no device loss |
 | Draws dropped in gameplay | about 280 a frame: 255 are the ray-tracing structure builder (off on purpose), the rest shaders that do not translate yet |
