@@ -90,6 +90,27 @@ function Get-LastFrameTime([string]$Events) {
     return $null
 }
 
+# A grab of the title's window (client area only, nothing else on screen)
+# with ffmpeg's Windows Graphics Capture source, if ffmpeg is installed
+# (tools\ffmpeg under the user's folder, or on PATH). Returns the picture's
+# mean brightness (0-255) or $null.
+function Save-WindowShot([string]$ExeName, [string]$Png) {
+    $ff = Join-Path $env:USERPROFILE 'tools\ffmpeg\ffmpeg.exe'
+    if (-not (Test-Path $ff)) { $ff = (Get-Command ffmpeg -ErrorAction SilentlyContinue).Source }
+    if (-not $ff) { return $null }
+    $name = [regex]::Escape($ExeName)
+    # ffmpeg's complaints (no window yet, the title gone) must never stop a
+    # run: native stderr is an error record under -ErrorAction Stop.
+    $ErrorActionPreference = 'Continue'
+    try {
+        $null = & $ff -v quiet -y -f lavfi -i "gfxcapture=window_exe=$($name):capture_cursor=0:max_framerate=5,hwdownload,format=bgra" -frames:v 1 -vf 'scale=960:-2' $Png 2>&1
+        if (-not (Test-Path $Png)) { return $null }
+        $stat = & $ff -v error -i $Png -vf 'format=gray,signalstats,metadata=print:key=lavfi.signalstats.YAVG:file=-' -f null - 2>&1 | Out-String
+    } catch { return $null }
+    if ($stat -match 'YAVG=([\d.]+)') { return [math]::Round([double]$Matches[1], 1) }
+    return $null
+}
+
 function Invoke-VictoryRun {
     param(
         [string]$Victory, [string]$Exe, [string]$Log, [int]$Seconds,
@@ -116,11 +137,22 @@ function Invoke-VictoryRun {
         $proc = Start-Process -FilePath cmd.exe -ArgumentList '/c', "`"$cmdline`"" -PassThru -WindowStyle Hidden
         $lastFrame = $null; $lastFrameSeen = Get-Date
         $exited = $false
+        # Proof of what reached the screen: a window grab every 15 s.
+        $shotDir = if ($events) { Join-Path (Split-Path $events -Parent) 'shots' } else { $null }
+        if ($shotDir) { New-Item -ItemType Directory -Force $shotDir | Out-Null; 't,yavg' | Set-Content (Join-Path $shotDir 'shots.csv') }
+        $exeName = Split-Path $Victory -Leaf
+        $nextShot = 15
         while (-not $exited) {
             $exited = $proc.WaitForExit(5000)
             if ($exited) { break }
             $elapsed = ((Get-Date) - $started).TotalSeconds
             if ($elapsed -ge $Seconds) { break }
+            if ($shotDir -and $elapsed -ge $nextShot) {
+                $at = [int]$elapsed
+                $y = Save-WindowShot $exeName (Join-Path $shotDir ('t{0:D4}.png' -f $at))
+                if ($null -ne $y) { "$at,$y" | Add-Content (Join-Path $shotDir 'shots.csv') }
+                $nextShot = $elapsed + 15
+            }
             $t = Get-LastFrameTime $events
             if ($null -ne $t -and $t -ne $lastFrame) { $lastFrame = $t; $lastFrameSeen = Get-Date }
             $quiet = ((Get-Date) - $lastFrameSeen).TotalSeconds

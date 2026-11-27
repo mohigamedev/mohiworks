@@ -93,7 +93,7 @@ pub fn run(paths: Vec<PathBuf>, jobs: Option<usize>, pipelines: bool) -> Result<
                         Err(e) => failed.lock().unwrap().push(e),
                     }
                     let n = done.fetch_add(1, Ordering::Relaxed) + 1;
-                    if n.is_multiple_of(1000) || n == total {
+                    if n.is_multiple_of(250) || n == total {
                         println!(
                             "  {n}/{total} ({} translated now, {} failed) {:.0} s",
                             fresh.load(Ordering::Relaxed),

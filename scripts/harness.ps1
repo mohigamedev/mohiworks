@@ -374,13 +374,38 @@ function Invoke-Scenario([string]$ScenarioName, $Given = $null) {
     if ((Test-Path $log) -and (Select-String -Path $log -Pattern '^VIctory: host GPU failure' -Quiet)) {
         $fails += 'host GPU failure (run.log)'
     }
+    # What reached the screen: the window grabs' brightness (0-255) from two
+    # minutes after the world's first file opens (past the opening cards),
+    # and how many of them are black.
+    $picture = $null
+    $shotCsv = Join-Path $out 'shots\shots.csv'
+    if (Test-Path $shotCsv) {
+        $shots = @(Import-Csv $shotCsv)
+        $worldAt = $null
+        if (Test-Path $events) {
+            $m = Select-String -Path $events -Pattern '"name":"core_restofworld001"' | Select-Object -First 1
+            if ($m -and $m.Line -match '"t":([\d.]+)') { $worldAt = [double]$Matches[1] }
+        }
+        $late = @($shots | Where-Object { $null -ne $worldAt -and [double]$_.t -ge $worldAt + 120 })
+        $picture = [ordered]@{
+            shots = $shots.Count
+            after_world = $late.Count
+            black_after_world = @($late | Where-Object { [double]$_.yavg -lt 5 }).Count
+            mean_yavg_after_world = if ($late.Count) { [math]::Round(($late | ForEach-Object { [double]$_.yavg } | Measure-Object -Average).Average, 1) } else { $null }
+        }
+        Write-Host ("picture        {0} window grabs (shots\); from 2 min after the world opens: {1}, {2} black, mean brightness {3}" -f $picture.shots, $picture.after_world, $picture.black_after_world, $picture.mean_yavg_after_world)
+    }
+    # Switches set in the environment the harness was started from (not by
+    # the scenario): they change a run as much as the scenario's own.
+    $inherited = [ordered]@{}
+    Get-ChildItem Env: | Where-Object { $_.Name -like 'VICTORY_*' -and -not $envs.Contains($_.Name) } | ForEach-Object { $inherited[$_.Name] = $_.Value }
     $commit = (git -C $script:RepoRoot rev-parse --short HEAD) 2>$null
     $dirty = [bool]((git -C $script:RepoRoot status --porcelain --untracked-files=no) 2>$null)
     $result = [ordered]@{
         scenario = $ScenarioName; time = $stamp; commit = $commit; uncommitted_changes = $dirty
         console = $console; snapshot = $s.snapshot; preset = $s.preset; keys = $s.keys; env = $envs
         seconds = $s.seconds; ran = $run.Ran; exited_by_itself = $run.Exited
-        result = $r; passed = ($fails.Count -eq 0); failures = $fails
+        env_inherited = $inherited; result = $r; picture = $picture; passed = ($fails.Count -eq 0); failures = $fails
         hang = $(if ($run) { $run.Hang } else { $null })
     }
     # The exact builds that ran (the run's `build` event): this layer's
